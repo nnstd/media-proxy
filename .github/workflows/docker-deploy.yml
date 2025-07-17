@@ -1,0 +1,209 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc \
+            pkg-config \
+            make \
+            nasm \
+            yasm \
+            git \
+            wget \
+            tar \
+            xz-utils \
+            libssl-dev \
+            build-essential
+
+      - name: Build FFmpeg from source
+        run: |
+          mkdir -p tmp
+          cd tmp
+          wget https://ffmpeg.org/releases/ffmpeg-7.0.tar.xz
+          tar -xf ffmpeg-7.0.tar.xz
+          cd ffmpeg-7.0
+          ./configure \
+            --prefix=/tmp/ffmpeg \
+            --enable-shared \
+            --disable-static \
+            --disable-autodetect \
+            --disable-programs \
+            --disable-doc \
+            --disable-postproc \
+            --disable-pixelutils \
+            --disable-hwaccels \
+            --disable-ffprobe \
+            --disable-ffplay \
+            --enable-openssl \
+            --enable-protocol=file,http,hls
+          make -j$(nproc)
+          make install
+
+      - name: Install xgo for cross-compilation
+        run: |
+          go install src.techknowlogick.com/xgo@latest
+
+      - name: Build binaries for all architectures
+        run: |
+          # Set FFmpeg environment variables
+          export CGO_LDFLAGS="-L/tmp/ffmpeg/lib/"
+          export CGO_CFLAGS="-I/tmp/ffmpeg/include/"
+          export PKG_CONFIG_PATH="/tmp/ffmpeg/lib/pkgconfig"
+          
+          # Ensure all dependencies are properly downloaded
+          go mod download
+          go mod verify
+          go mod tidy
+          
+          # Store the exact Go version and build flags
+          GO_RELEASE_V=$(go version | { read _ _ v _; echo ${v#go}; })
+          echo "GO_VERSION=$GO_RELEASE_V" >> $GITHUB_ENV
+          echo "BUILD_LDFLAGS=-s -w" >> $GITHUB_ENV
+          
+          # Build binaries using xgo with FFmpeg support
+          xgo -image techknowlogick/xgo:latest -v \
+            -ldflags="-s -w" \
+            -go $GO_RELEASE_V \
+            -out media-proxy \
+            -dest bin \
+            -targets="linux/amd64,linux/386,linux/arm64,linux/arm-7,darwin/amd64,darwin/arm64,windows/amd64,windows/386" \
+            -env="GO111MODULE=on,GOPROXY=https://proxy.golang.org,direct,CGO_ENABLED=1,CGO_LDFLAGS=-L/tmp/ffmpeg/lib/,CGO_CFLAGS=-I/tmp/ffmpeg/include/,PKG_CONFIG_PATH=/tmp/ffmpeg/lib/pkgconfig" .
+          
+          # Fix ownership and permissions for files created by xgo
+          sudo chown -R $USER:$USER bin/ 2>/dev/null || true
+          chmod -R 755 bin/ 2>/dev/null || true
+          
+          # Create sha256 files for each binary
+          cd bin
+          for binary in media-proxy-*; do
+            if [[ -f "$binary" ]]; then
+              echo "Creating sha256 for $binary"
+              sha256sum "$binary" > "$binary.sha256"
+            fi
+          done
+
+      - name: List all built artifacts
+        working-directory: ./bin
+        run: |
+          echo "Built artifacts:"
+          ls -la
+          echo ""
+          echo "SHA256 files:"
+          ls -la *.sha256 2>/dev/null || echo "No SHA256 files found yet"
+          
+          # Ensure all files have proper permissions and ownership
+          sudo chown -R runner:runner . 2>/dev/null || true
+          chmod -R 644 *.sha256 2>/dev/null || true
+          chmod -R 755 media-proxy-* 2>/dev/null || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: bin/
+
+  build-docker-and-release:
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts
+          path: bin/
+
+      - name: Extract tag name
+        id: tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+          labels: |
+            org.opencontainers.image.title=Media Proxy
+            org.opencontainers.image.description=A media proxy server with FFmpeg support
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: List available files for release
+        working-directory: ./bin
+        run: |
+          echo "Files available for release:"
+          ls -la
+          echo ""
+          echo "Main binaries:"
+          ls -la media-proxy-* 2>/dev/null || echo "No main binaries found"
+          echo ""
+          echo "SHA256 files:"
+          ls -la *.sha256 2>/dev/null || echo "No SHA256 files found"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Release ${{ steps.tag.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: bin/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
