@@ -12,7 +12,8 @@ RUN apk add --no-cache \
     wget \
     tar \
     xz \
-    openssl-dev
+    openssl-dev \
+    libwebp-dev
 
 WORKDIR /app
 
@@ -56,7 +57,8 @@ FROM alpine:latest
 RUN apk add --no-cache \
     ca-certificates \
     musl \
-    openssl
+    openssl \
+    libwebp
 
 WORKDIR /app
 
