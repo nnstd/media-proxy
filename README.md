@@ -61,6 +61,8 @@ The service is configured via environment variables:
 | Variable | Description | Required | Default |
 |----------|-------------|----------|---------|
 | `APP_ALLOWED_ORIGINS` | Comma-separated list of allowed hostnames | No | Empty (allows all) |
+| `APP_ADDRESS` | Address to listen on | No | `:3000` |
+| `APP_PREFORK` | Enable [preforking](https://docs.gofiber.io/api/fiber#config) | No | `false` |
 
 ### Example Configuration
 ```bash
@@ -198,10 +200,11 @@ curl "http://localhost:3000/health"
 
 ## Dependencies
 
-- [Fiber](https://github.com/gofiber/fiber) - Web framework
-- [Zap](https://github.com/uber-go/zap) - Structured logging
+- [fiber](https://github.com/gofiber/fiber) - Web framework
+- [zap](https://github.com/uber-go/zap) - Structured logging
 - [go-astiav](https://github.com/asticode/go-astiav) - FFmpeg bindings for video processing
 - [env](https://github.com/caarlos0/env) - Environment variable parsing
+- [go-webp](https://github.com/kolesa-team/go-webp) - WebP image processing
 
 ## License
 

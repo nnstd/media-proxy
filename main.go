@@ -80,6 +80,7 @@ func main() {
 
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
+		Prefork:               config.Prefork,
 	})
 
 	app.Use(healthcheck.New())
@@ -212,8 +213,15 @@ func main() {
 
 		return c.Send(frameData)
 	})
-	
+
 	//#endregion
 
-	log.Fatal(app.Listen(":3000"))
+	address := config.Address
+	if address == "" {
+		address = ":3000"
+	}
+
+	log.Fatal(app.Listen(address))
+
+	logger.Info("server started", zap.String("address", address))
 }

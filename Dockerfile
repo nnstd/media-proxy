@@ -70,4 +70,4 @@ COPY --from=builder /app/server .
 
 EXPOSE 3000
 
-ENTRYPOINT ["/app/server"]
+CMD ["sh", "-c", "/app/server"]
