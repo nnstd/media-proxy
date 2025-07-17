@@ -37,6 +37,7 @@ jobs:
             tar \
             xz-utils \
             libssl-dev \
+            libwebp-dev \
             build-essential
 
       - name: Build FFmpeg from source
