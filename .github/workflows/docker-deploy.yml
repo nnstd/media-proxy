@@ -91,7 +91,7 @@ jobs:
             -go $GO_RELEASE_V \
             -out media-proxy \
             -dest bin \
-            -targets="linux/amd64,linux/386,linux/arm64,linux/arm-7,darwin/amd64,darwin/arm64,windows/amd64,windows/386" \
+            -targets="linux/amd64,linux/386,linux/arm64,darwin/amd64,darwin/arm64,windows/amd64,windows/386" \
             -env="GO111MODULE=on,GOPROXY=https://proxy.golang.org,direct,CGO_ENABLED=1,CGO_LDFLAGS=-L/tmp/ffmpeg/lib/,CGO_CFLAGS=-I/tmp/ffmpeg/include/,PKG_CONFIG_PATH=/tmp/ffmpeg/lib/pkgconfig" .
           
           # Fix ownership and permissions for files created by xgo
