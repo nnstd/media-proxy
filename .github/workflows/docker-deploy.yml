@@ -11,7 +11,22 @@ env:
 
 jobs:
   build-binaries:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            cgo: "1"
+            name: linux-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            cgo: "1"
+            name: darwin-arm64
+    
+    runs-on: ${{ matrix.os }}
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -23,7 +38,8 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Install build dependencies
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest' && matrix.cgo == '1'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -40,7 +56,13 @@ jobs:
             libwebp-dev \
             build-essential
 
-      - name: Build FFmpeg from source
+      - name: Install macOS dependencies
+        if: matrix.os == 'macos-latest' && matrix.cgo == '1' && matrix.goarch == 'arm64'
+        run: |
+          brew install ffmpeg webp nasm coreutils
+
+      - name: Build FFmpeg from source (Linux)
+        if: matrix.os == 'ubuntu-latest' && matrix.cgo == '1'
         run: |
           mkdir -p tmp
           cd tmp
@@ -64,67 +86,33 @@ jobs:
           make -j$(nproc)
           make install
 
-      - name: Install xgo for cross-compilation
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
         run: |
-          go install src.techknowlogick.com/xgo@latest
-
-      - name: Build binaries for all architectures
-        run: |
-          # Set FFmpeg environment variables
-          export CGO_LDFLAGS="-L/tmp/ffmpeg/lib/"
-          export CGO_CFLAGS="-I/tmp/ffmpeg/include/"
-          export PKG_CONFIG_PATH="/tmp/ffmpeg/lib/pkgconfig"
+          # Set build environment based on OS and CGO
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ] && [ "${{ matrix.cgo }}" = "1" ]; then
+            export CGO_LDFLAGS="-L/tmp/ffmpeg/lib/"
+            export CGO_CFLAGS="-I/tmp/ffmpeg/include/"
+            export PKG_CONFIG_PATH="/tmp/ffmpeg/lib/pkgconfig"
+          elif [ "${{ matrix.os }}" = "macos-latest" ] && [ "${{ matrix.cgo }}" = "1" ]; then
+            export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig"
+          fi
           
-          # Ensure all dependencies are properly downloaded
-          go mod download
-          go mod verify
-          go mod tidy
+          # Build the binary
+          mkdir -p bin
+          go build -ldflags="-s -w" -o bin/media-proxy-${{ matrix.name }}${{ matrix.ext }} .
           
-          # Store the exact Go version and build flags
-          GO_RELEASE_V=$(go version | { read _ _ v _; echo ${v#go}; })
-          echo "GO_VERSION=$GO_RELEASE_V" >> $GITHUB_ENV
-          echo "BUILD_LDFLAGS=-s -w" >> $GITHUB_ENV
-          
-          # Build binaries using xgo with FFmpeg support
-          xgo -image techknowlogick/xgo:latest -v \
-            -ldflags="-s -w" \
-            -go $GO_RELEASE_V \
-            -out media-proxy \
-            -dest bin \
-            -targets="linux/amd64,linux/386,linux/arm64,darwin/amd64,darwin/arm64,windows/amd64,windows/386" \
-            -env="GO111MODULE=on,GOPROXY=https://proxy.golang.org,direct,CGO_ENABLED=1,CGO_LDFLAGS=-L/tmp/ffmpeg/lib/,CGO_CFLAGS=-I/tmp/ffmpeg/include/,PKG_CONFIG_PATH=/tmp/ffmpeg/lib/pkgconfig" .
-          
-          # Fix ownership and permissions for files created by xgo
-          sudo chown -R $USER:$USER bin/ 2>/dev/null || true
-          chmod -R 755 bin/ 2>/dev/null || true
-          
-          # Create sha256 files for each binary
+          # Create sha256
           cd bin
-          for binary in media-proxy-*; do
-            if [[ -f "$binary" ]]; then
-              echo "Creating sha256 for $binary"
-              sha256sum "$binary" > "$binary.sha256"
-            fi
-          done
-
-      - name: List all built artifacts
-        working-directory: ./bin
-        run: |
-          echo "Built artifacts:"
-          ls -la
-          echo ""
-          echo "SHA256 files:"
-          ls -la *.sha256 2>/dev/null || echo "No SHA256 files found yet"
-          
-          # Ensure all files have proper permissions and ownership
-          sudo chown -R runner:runner . 2>/dev/null || true
-          chmod -R 644 *.sha256 2>/dev/null || true
-          chmod -R 755 media-proxy-* 2>/dev/null || true
+          sha256sum media-proxy-${{ matrix.name }}${{ matrix.ext }} > media-proxy-${{ matrix.name }}${{ matrix.ext }}.sha256
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-artifacts
+          name: binary-${{ matrix.name }}
           path: bin/
 
   build-docker-and-release:
@@ -137,11 +125,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download build artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          name: release-artifacts
-          path: bin/
+          path: artifacts
+
+      - name: Collect all binaries
+        run: |
+          mkdir -p bin
+          find artifacts -name "media-proxy-*" -type f -exec cp {} bin/ \;
+          ls -la bin/
 
       - name: Extract tag name
         id: tag
@@ -178,24 +171,12 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: List available files for release
-        working-directory: ./bin
-        run: |
-          echo "Files available for release:"
-          ls -la
-          echo ""
-          echo "Main binaries:"
-          ls -la media-proxy-* 2>/dev/null || echo "No main binaries found"
-          echo ""
-          echo "SHA256 files:"
-          ls -la *.sha256 2>/dev/null || echo "No SHA256 files found"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
