@@ -4,7 +4,7 @@ A high-performance media proxy service built with Go and Fiber that provides sec
 
 ## Features
 
-- **Image Proxying**: Proxy images from allowed origins with optional quality control and WebP conversion
+- **Image Proxying**: Proxy images from allowed origins with optional quality control, WebP conversion, resizing, and rescaling
 - **WebP Conversion**: Convert any supported image format to WebP with quality optimization
 - **Video Preview Generation**: Extract first frame thumbnails from video files
 - **Origin Validation**: Whitelist-based origin control for security
@@ -97,6 +97,12 @@ curl "http://localhost:3000/image?url=https://example.com/image.jpg&webp=true&qu
 
 # Quality optimization without format conversion
 curl "http://localhost:3000/image?url=https://example.com/image.jpg&quality=75"
+
+# Rescale image
+curl "http://localhost:3000/image?url=https://example.com/image.jpg&scale=0.5"
+
+# Resize image
+curl "http://localhost:3000/image?url=https://example.com/image.jpg&width=100&height=100"
 ```
 
 **Response:**

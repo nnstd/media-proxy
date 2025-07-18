@@ -101,6 +101,17 @@ func main() {
 			return c.Status(fiber.StatusBadRequest).SendString("quality must be between 1 and 100")
 		}
 
+		width := c.QueryInt("width", 0)
+		height := c.QueryInt("height", 0)
+		if width < 1 || height < 1 {
+			return c.Status(fiber.StatusBadRequest).SendString("width and height must be greater than 0")
+		}
+
+		scale := c.QueryFloat("scale", 0)
+		if scale < 0 || scale > 1 {
+			return c.Status(fiber.StatusBadRequest).SendString("scale must be between 0 and 1")
+		}
+
 		forceWebp := c.QueryBool("webp", false)
 
 		validOrigin, hostname := validateUrl(urlParam, config.AllowedOrigins)
@@ -138,6 +149,20 @@ func main() {
 			img, err := readImage(response.Body, parsedContentType)
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).SendString("failed to read image")
+			}
+
+			if width > 0 || height > 0 {
+				img, err = resizeImage(img, width, height)
+				if err != nil {
+					logger.Error("failed to resize image", zap.Error(err))
+				}
+			}
+
+			if scale > 0 {
+				img, err = rescaleImage(img, scale)
+				if err != nil {
+					logger.Error("failed to rescale image", zap.Error(err))
+				}
 			}
 
 			c.Set("Content-Type", "image/webp")
