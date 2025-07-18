@@ -12,6 +12,8 @@ import (
 
 	"media-proxy/config"
 	"media-proxy/routes"
+
+	"github.com/dgraph-io/ristretto/v2"
 )
 
 var logger *zap.Logger
@@ -30,6 +32,33 @@ func main() {
 		logger.Fatal(err.Error())
 	}
 
+	cacheConfig := &ristretto.Config[string, routes.CacheValue]{
+		NumCounters: 1e7,     // number of keys to track frequency of (10M).
+		MaxCost:     1 << 30, // maximum cost of cache (1GB).
+		BufferItems: 64,      // number of keys per Get buffer.
+	}
+
+	if config.CacheBufferItems > 0 {
+		cacheConfig.BufferItems = config.CacheBufferItems
+	}
+
+	if config.CacheMaxCost > 0 {
+		cacheConfig.MaxCost = config.CacheMaxCost
+	}
+
+	if config.CacheNumCounters > 0 {
+		cacheConfig.NumCounters = config.CacheNumCounters
+	}
+
+	if config.CacheTTL == 0 {
+		config.CacheTTL = 1800 // 30 minutes
+	}
+
+	cache, err := ristretto.NewCache(cacheConfig)
+	if err != nil {
+		logger.Fatal(err.Error())
+	}
+
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
 		Prefork:               config.Prefork,
@@ -38,8 +67,8 @@ func main() {
 	app.Use(healthcheck.New())
 	app.Use(compress.New())
 
-	routes.RegisterImageRoutes(logger, &config, app)
-	routes.RegisterVideoRoutes(logger, &config, app)
+	routes.RegisterImageRoutes(logger, cache, &config, app)
+	routes.RegisterVideoRoutes(logger, cache, &config, app)
 
 	address := config.Address
 	if address == "" {

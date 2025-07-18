@@ -25,6 +25,10 @@ type imageContext struct {
 	Hostname string
 }
 
+func (c *imageContext) String() string {
+	return fmt.Sprintf("quality=%d;width=%d;height=%d;scale=%f;interpolation=%d;webp=%t", c.Quality, c.Width, c.Height, c.Scale, c.Interpolation, c.Webp)
+}
+
 func processImageContext(logger *zap.Logger, c *fiber.Ctx, config *config.Config) (ok bool, status int, err error, params *imageContext) {
 	urlParam := c.Query("url")
 	if urlParam == "" {
@@ -48,7 +52,7 @@ func processImageContext(logger *zap.Logger, c *fiber.Ctx, config *config.Config
 
 	width := c.QueryInt("width", 0)
 	height := c.QueryInt("height", 0)
-	if width < 1 || height < 1 {
+	if width > 0 && height > 0 && (width < 1 || height < 1) {
 		return false, fiber.StatusBadRequest, fmt.Errorf("width and height must be greater than 0"), nil
 	}
 

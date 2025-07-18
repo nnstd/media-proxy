@@ -8,6 +8,12 @@ var imageMimeTypes = []string{
 	"image/bmp",
 	"image/tiff",
 	"image/avif",
+	"application/pdf",
+	"application/epub+zip",
+	"application/x-mobipocket-ebook",
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	"application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
 
 var videoMimeTypes = []string{

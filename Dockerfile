@@ -13,7 +13,8 @@ RUN apk add --no-cache \
     tar \
     xz \
     openssl-dev \
-    libwebp-dev
+    libwebp-dev \
+    mupdf-dev
 
 WORKDIR /app
 
@@ -49,7 +50,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 go build -ldflags "-s -w" -o server .
+RUN CGO_ENABLED=1 go build -tags=musl -ldflags "-s -w" -o server .
 
 FROM alpine:latest
 
@@ -58,7 +59,8 @@ RUN apk add --no-cache \
     ca-certificates \
     musl \
     openssl \
-    libwebp
+    libwebp \
+    mupdf
 
 WORKDIR /app
 

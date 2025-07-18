@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"bytes"
 	"fmt"
 	"image"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"image/jpeg"
 	"image/png"
 
+	"github.com/gen2brain/go-fitz"
 	"github.com/kolesa-team/go-webp/decoder"
 	"github.com/kolesa-team/go-webp/webp"
 	"golang.org/x/image/bmp"
@@ -35,7 +37,30 @@ func readImage(r io.Reader, contentType string) (image.Image, error) {
 	case "image/webp":
 		return webp.Decode(r, &decoder.Options{})
 
+	case "application/pdf",
+		"application/epub+zip",
+		"application/x-mobipocket-ebook",
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation":
+		doc, err := fitz.NewFromReader(r)
+		if err != nil {
+			return nil, err
+		}
+
+		defer doc.Close()
+
+		if pageCount := doc.NumPage(); pageCount > 0 {
+			return doc.Image(0)
+		}
+
+		return nil, fmt.Errorf("no pages found")
+
 	default:
 		return nil, fmt.Errorf("unsupported image format: %s", contentType)
 	}
+}
+
+func readImageSlice(s []byte, contentType string) (image.Image, error) {
+	return readImage(bytes.NewReader(s), contentType)
 }

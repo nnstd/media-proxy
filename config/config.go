@@ -7,4 +7,9 @@ type Config struct {
 	Webp bool `json:"webp" env:"APP_WEBP"`
 
 	AllowedOrigins []string `json:"allowedOrigins" env:"APP_ALLOWED_ORIGINS"`
+
+	CacheTTL  int64 `json:"cacheTTLSeconds" env:"APP_CACHE_TTL_SECONDS"`
+	CacheMaxCost     int64 `json:"cacheMaxCost" env:"APP_CACHE_MAX_COST"`
+	CacheNumCounters int64 `json:"cacheNumCounters" env:"APP_CACHE_NUM_COUNTERS"`
+	CacheBufferItems int64 `json:"cacheBufferItems" env:"APP_CACHE_BUFFER_ITEMS"`
 }

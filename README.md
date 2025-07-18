@@ -24,6 +24,14 @@ A high-performance media proxy service built with Go and Fiber that provides sec
 - TIFF (`image/tiff`)
 - AVIF (`image/avif`)
 
+### Documents
+- PDF (`application/pdf`)
+- EPUB (`application/epub+zip`)
+- MOBI (`application/x-mobipocket-ebook`)
+- DOCX (`application/vnd.openxmlformats-officedocument.wordprocessingml.document`)
+- XLSX (`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`)
+- PPTX (`application/vnd.openxmlformats-officedocument.presentationml.presentation`)
+
 ### Videos
 - MP4 (`video/mp4`)
 - OGG (`video/ogg`)
@@ -64,6 +72,10 @@ The service is configured via environment variables:
 | `APP_ADDRESS` | Address to listen on | No | `:3000` |
 | `APP_PREFORK` | Enable [preforking](https://docs.gofiber.io/api/fiber#config) | No | `false` |
 | `APP_WEBP` | Default to WebP conversion | No | `false` |
+| `APP_CACHE_TTL_SECONDS` | Cache TTL in seconds | No | `1800` (30 minutes) |
+| `APP_CACHE_MAX_COST` | Cache max cost in bytes | No | `1073741824` (1GB) |
+| `APP_CACHE_NUM_COUNTERS` | Cache num counters | No | `10000000` (10M) |
+| `APP_CACHE_BUFFER_ITEMS` | Cache buffer items | No | `64` |
 
 ### Example Configuration
 ```bash
@@ -116,13 +128,26 @@ curl "http://localhost:3000/image?url=https://example.com/image.jpg&scale=0.5"
 
 # Resize image
 curl "http://localhost:3000/image?url=https://example.com/image.jpg&width=100&height=100"
+
+# Convert PDF first page to image
+curl "http://localhost:3000/image?url=https://example.com/document.pdf"
+
+# Convert DOCX first page to WebP with resizing
+curl "http://localhost:3000/image?url=https://example.com/document.docx&webp=true&width=800&height=600"
+
+# Convert EPUB first page to thumbnail
+curl "http://localhost:3000/image?url=https://example.com/book.epub&scale=0.3&quality=85"
+
+# Convert PowerPoint first slide to image
+curl "http://localhost:3000/image?url=https://example.com/presentation.pptx&width=1200&height=800"
 ```
 
 **Response:**
 - Returns the proxied image (original format or WebP if requested)
+- For documents: Returns first page/slide as an image
 - Content-Type: Original format or `image/webp` when converted
 - Validates that the URL origin is in the allowed list
-- Validates that the content type is a supported image format
+- Validates that the content type is a supported image or document format
 - Automatic format conversion when quality < 100 or webp=true
 
 ### Video Preview
