@@ -11,6 +11,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"media-proxy/config"
+	fiberprometheus "media-proxy/middlewares/prometheus"
+	"media-proxy/metrics"
 	"media-proxy/routes"
 
 	"github.com/dgraph-io/ristretto/v2"
@@ -30,6 +32,11 @@ func main() {
 	config, err := env.ParseAs[config.Config]()
 	if err != nil {
 		logger.Fatal(err.Error())
+	}
+
+	if config.Metrics == nil {
+		metrics := true
+		config.Metrics = &metrics
 	}
 
 	cacheConfig := &ristretto.Config[string, routes.CacheValue]{
@@ -64,11 +71,21 @@ func main() {
 		Prefork:               config.Prefork,
 	})
 
+	prometheusModule := fiberprometheus.New("media-proxy")
+	prometheusModule.RegisterAt(app, "/metrics")
+
+	prometheusRegistry := prometheusModule.GetRegistry()
+	metrics := metrics.InitializeMetrics(prometheusRegistry, prometheusModule.GetConstLabels())
+
+	if *config.Metrics {
+		app.Use(prometheusModule.Middleware)
+	}
+
 	app.Use(healthcheck.New())
 	app.Use(compress.New())
 
-	routes.RegisterImageRoutes(logger, cache, &config, app)
-	routes.RegisterVideoRoutes(logger, cache, &config, app)
+	routes.RegisterImageRoutes(logger, cache, &config, app, metrics)
+	routes.RegisterVideoRoutes(logger, cache, &config, app, metrics)
 
 	address := config.Address
 	if address == "" {

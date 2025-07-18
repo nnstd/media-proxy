@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"media-proxy/config"
+	"media-proxy/metrics"
 	"media-proxy/mime"
 
 	"github.com/dgraph-io/ristretto/v2"
@@ -19,7 +20,7 @@ import (
 	"github.com/kolesa-team/go-webp/webp"
 )
 
-func RegisterImageRoutes(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, app *fiber.App) {
+func RegisterImageRoutes(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, app *fiber.App, counters *metrics.Metrics) {
 	app.Get("/image", func(c *fiber.Ctx) error {
 		logger.Info("image request received", zap.String("url", c.Query("url")))
 
@@ -31,6 +32,10 @@ func RegisterImageRoutes(logger *zap.Logger, cache *ristretto.Cache[string, Cach
 		cacheKey := cacheKey(params.Url, params)
 		cacheValue, ok := cache.Get(cacheKey)
 		if ok {
+			counters.SuccessfullyServed.WithLabelValues("image", params.Hostname, params.Url).Inc()
+
+			counters.ServedCached.WithLabelValues("image", params.Hostname, params.Url).Inc()
+
 			c.Set("Content-Type", cacheValue.ContentType)
 			return c.Send(cacheValue.Body)
 		}
@@ -104,6 +109,8 @@ func RegisterImageRoutes(logger *zap.Logger, cache *ristretto.Cache[string, Cach
 
 			logger.Info("image served successfully", zap.String("content-type", parsedContentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
 
+			counters.SuccessfullyServed.WithLabelValues("image", params.Hostname, params.Url).Inc()
+
 			return c.Send(buf.Bytes())
 		} else {
 			c.Set("Content-Type", parsedContentType)
@@ -114,6 +121,8 @@ func RegisterImageRoutes(logger *zap.Logger, cache *ristretto.Cache[string, Cach
 			}, 1000, time.Duration(config.CacheTTL)*time.Second)
 
 			logger.Info("image served successfully", zap.String("content-type", parsedContentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
+
+			counters.SuccessfullyServed.WithLabelValues("image", params.Hostname, params.Url).Inc()
 
 			return c.Send(responseBody)
 		}

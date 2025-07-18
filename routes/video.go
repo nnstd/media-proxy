@@ -11,6 +11,7 @@ import (
 
 	"image/jpeg"
 	"media-proxy/config"
+	"media-proxy/metrics"
 	"media-proxy/mime"
 	goMime "mime"
 
@@ -19,7 +20,7 @@ import (
 	"github.com/kolesa-team/go-webp/webp"
 )
 
-func RegisterVideoRoutes(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, app *fiber.App) {
+func RegisterVideoRoutes(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, app *fiber.App, counters *metrics.Metrics) {
 	app.Get("/video/preview", func(c *fiber.Ctx) error {
 		logger.Info("video preview request received", zap.String("url", c.Query("url")))
 
@@ -31,6 +32,10 @@ func RegisterVideoRoutes(logger *zap.Logger, cache *ristretto.Cache[string, Cach
 		cacheKey := cacheKey(params.Url, params)
 		cacheValue, ok := cache.Get(cacheKey)
 		if ok {
+			counters.SuccessfullyServed.WithLabelValues("video-preview", params.Hostname, params.Url).Inc()
+
+			counters.ServedCached.WithLabelValues("video-preview", params.Hostname, params.Url).Inc()
+
 			c.Set("Content-Type", cacheValue.ContentType)
 			return c.Send(cacheValue.Body)
 		}
@@ -99,6 +104,8 @@ func RegisterVideoRoutes(logger *zap.Logger, cache *ristretto.Cache[string, Cach
 
 			logger.Info("video preview served successfully", zap.String("original-content-type", parsedContentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
 
+			counters.SuccessfullyServed.WithLabelValues("video-preview", params.Hostname, params.Url).Inc()
+
 			return c.Send(buf.Bytes())
 		} else {
 			buf := bytes.NewBuffer(nil)
@@ -116,6 +123,8 @@ func RegisterVideoRoutes(logger *zap.Logger, cache *ristretto.Cache[string, Cach
 			c.Set("Content-Type", "image/jpeg")
 
 			logger.Info("video preview served successfully", zap.String("original-content-type", parsedContentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
+
+			counters.SuccessfullyServed.WithLabelValues("video-preview", params.Hostname, params.Url).Inc()
 
 			return c.Send(buf.Bytes())
 		}
