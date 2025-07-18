@@ -71,6 +71,7 @@ The service is configured via environment variables:
 | `APP_ALLOWED_ORIGINS` | Comma-separated list of allowed hostnames | No | Empty (allows all) |
 | `APP_ADDRESS` | Address to listen on | No | `:3000` |
 | `APP_PREFORK` | Enable [preforking](https://docs.gofiber.io/api/fiber#config) | No | `false` |
+| `APP_METRICS` | Enable metrics | No | `true` |
 | `APP_WEBP` | Default to WebP conversion | No | `false` |
 | `APP_CACHE_TTL_SECONDS` | Cache TTL in seconds | No | `1800` (30 minutes) |
 | `APP_CACHE_MAX_COST` | Cache max cost in bytes | No | `1073741824` (1GB) |
