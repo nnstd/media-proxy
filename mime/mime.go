@@ -1,4 +1,4 @@
-package main
+package mime
 
 var imageMimeTypes = []string{
 	"image/jpeg",
@@ -22,7 +22,7 @@ var videoMimeTypes = []string{
 	"video/x-m4v",
 }
 
-func isImageMime(mimeType string) bool {
+func IsImageMime(mimeType string) bool {
 	for _, imageMimeType := range imageMimeTypes {
 		if mimeType == imageMimeType {
 			return true
@@ -32,7 +32,7 @@ func isImageMime(mimeType string) bool {
 	return false
 }
 
-func isVideoMime(mimeType string) bool {
+func IsVideoMime(mimeType string) bool {
 	for _, videoMimeType := range videoMimeTypes {
 		if mimeType == videoMimeType {
 			return true

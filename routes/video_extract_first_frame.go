@@ -1,15 +1,14 @@
-package main
+package routes
 
 import (
-	"bytes"
 	"fmt"
-	"image/jpeg"
+	"image"
 	"log"
 
 	"github.com/asticode/go-astiav"
 )
 
-func extractFirstFrame(urlStr string) ([]byte, error) {
+func extractFirstFrame(urlStr string) (image.Image, error) {
 	// Open input format context
 	inputFormatContext := astiav.AllocFormatContext()
 	if inputFormatContext == nil {
@@ -115,14 +114,7 @@ func extractFirstFrame(urlStr string) ([]byte, error) {
 			continue
 		}
 
-		// Encode image to JPEG
-		buf := new(bytes.Buffer)
-		if err := jpeg.Encode(buf, img, &jpeg.Options{Quality: 85}); err != nil {
-			log.Printf("Failed to encode JPEG: %v, continuing...", err)
-			continue
-		}
-
-		return buf.Bytes(), nil
+		return img, nil
 	}
 
 	return nil, fmt.Errorf("no video frames found")

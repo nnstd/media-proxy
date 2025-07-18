@@ -63,6 +63,7 @@ The service is configured via environment variables:
 | `APP_ALLOWED_ORIGINS` | Comma-separated list of allowed hostnames | No | Empty (allows all) |
 | `APP_ADDRESS` | Address to listen on | No | `:3000` |
 | `APP_PREFORK` | Enable [preforking](https://docs.gofiber.io/api/fiber#config) | No | `false` |
+| `APP_WEBP` | Default to WebP conversion | No | `false` |
 
 ### Example Configuration
 ```bash
@@ -79,13 +80,25 @@ Returns the health status of the service.
 
 ### Image Proxy
 ```
-GET /image?url=<image_url>&quality=<1-100>&webp=<true|false>
+GET /image?url=<image_url>&quality=<1-100>&webp=<true|false>&width=<width>&height=<height>&scale=<scale>&interpolation=<interpolation>
 ```
 
 **Parameters:**
 - `url` (required): The URL of the image to proxy
 - `quality` (optional): Image quality for optimization (1-100, default: 100)
 - `webp` (optional): Force conversion to WebP format (true/false, default: false)
+- `width` (optional): Width of the image (default: 0)
+- `height` (optional): Height of the image (default: 0)
+- `scale` (optional): Scale factor for the image (0-1, default: 0)
+- `interpolation` (optional): Interpolation method for resizing (0-5, default: 5)
+
+**Interpolation methods:**
+- 0: Nearest-neighbor interpolation
+- 1: Bilinear interpolation
+- 2: Bicubic interpolation
+- 3: Mitchell-Netravali interpolation
+- 4: Lanczos2 interpolation
+- 5: Lanczos3 interpolation
 
 **Examples:**
 ```bash
