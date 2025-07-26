@@ -1,11 +1,11 @@
 package routes
 
 import (
-	"fmt"
-	"media-proxy/config"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"media-proxy/config"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/nfnt/resize"
@@ -45,6 +45,45 @@ func compareHmac(url, providedSignature, secret string) bool {
 
 	// Use constant-time comparison
 	return hmac.Equal(expectedMAC, providedMAC)
+}
+
+func processImageUpload(logger *zap.Logger, c *fiber.Ctx, config *config.Config) (ok bool, status int, err error, params *imageContext) {
+	token := c.Query("token")
+	if token != config.Token {
+		return false, fiber.StatusForbidden, fmt.Errorf("invalid token"), nil
+	}
+
+	quality := c.QueryInt("quality", 100)
+	if quality < 1 || quality > 100 {
+		return false, fiber.StatusBadRequest, fmt.Errorf("quality must be between 1 and 100"), nil
+	}
+
+	interpolation := c.QueryInt("interpolation", int(resize.Lanczos3))
+	if interpolation < 0 || interpolation > 5 {
+		return false, fiber.StatusBadRequest, fmt.Errorf("interpolation must be between 0 and 5"), nil
+	}
+
+	width := c.QueryInt("width", 0)
+	height := c.QueryInt("height", 0)
+	if width > 0 && height > 0 && (width < 1 || height < 1) {
+		return false, fiber.StatusBadRequest, fmt.Errorf("width and height must be greater than 0"), nil
+	}
+
+	scale := c.QueryFloat("scale", 0)
+	if scale < 0 || scale > 1 {
+		return false, fiber.StatusBadRequest, fmt.Errorf("scale must be between 0 and 1"), nil
+	}
+
+	webp := c.QueryBool("webp", config.Webp)
+
+	return true, fiber.StatusOK, nil, &imageContext{
+		Quality:       quality,
+		Width:         width,
+		Height:        height,
+		Scale:         scale,
+		Interpolation: resize.InterpolationFunction(interpolation),
+		Webp:          webp,
+	}
 }
 
 func processImageContext(logger *zap.Logger, c *fiber.Ctx, config *config.Config) (ok bool, status int, err error, params *imageContext) {

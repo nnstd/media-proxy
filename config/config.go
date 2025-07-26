@@ -9,6 +9,7 @@ type Config struct {
 
 	AllowedOrigins []string `json:"allowedOrigins" env:"APP_ALLOWED_ORIGINS"`
 
+	Token   string `json:"token" env:"APP_TOKEN"`
 	HmacKey string `json:"hmacKey" env:"APP_HMAC_KEY"`
 
 	CacheTTL         int64 `json:"cacheTTLSeconds" env:"APP_CACHE_TTL_SECONDS"`
