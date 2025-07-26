@@ -243,14 +243,6 @@ curl "http://localhost:3000/video/preview?url=https://example.com/sample.mp4"
 curl "http://localhost:3000/health"
 ```
 
-## Dependencies
-
-- [fiber](https://github.com/gofiber/fiber) - Web framework
-- [zap](https://github.com/uber-go/zap) - Structured logging
-- [go-astiav](https://github.com/asticode/go-astiav) - FFmpeg bindings for video processing
-- [env](https://github.com/caarlos0/env) - Environment variable parsing
-- [go-webp](https://github.com/kolesa-team/go-webp) - WebP image processing
-
 ## License
 
-MIT
+Media-server is licensed under the [GNU Affero General Public License v3.0](https://github.com/nnstd/media-proxy/blob/main/LICENSE) and as commercial software. For commercial licensing, please contact us at sales@nnstd.dev.
