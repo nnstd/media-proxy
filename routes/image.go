@@ -1,19 +1,19 @@
 package routes
 
 import (
-	"bytes"
 	"fmt"
 	"io"
-	goMime "mime"
-	"net/http"
+	"mime"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
 
+	"media-proxy/client"
 	"media-proxy/config"
 	"media-proxy/metrics"
-	"media-proxy/mime"
+	"media-proxy/pool"
+	"media-proxy/validation"
 
 	"github.com/dgraph-io/ristretto/v2"
 	"github.com/kolesa-team/go-webp/encoder"
@@ -41,7 +41,7 @@ func handleImageRequest(logger *zap.Logger, cache *ristretto.Cache[string, Cache
 		pathParams := c.Params("*")
 		logger.Info("image request received", zap.String("pathParams", pathParams))
 
-		ok, status, err, params := ProcessImageContextFromPath(logger, pathParams, config)
+		ok, status, err, params := validation.ProcessImageContextFromPath(logger, pathParams, config)
 		if !ok {
 			return c.Status(status).SendString(err.Error())
 		}
@@ -55,7 +55,7 @@ func handleImageRequestLegacy(logger *zap.Logger, cache *ristretto.Cache[string,
 	return func(c *fiber.Ctx) error {
 		logger.Info("image request received", zap.String("url", c.Query("url")))
 
-		ok, status, err, params := processImageContext(logger, c, config)
+		ok, status, err, params := validation.ProcessImageContext(logger, c, config)
 		if !ok {
 			return c.Status(status).SendString(err.Error())
 		}
@@ -65,18 +65,18 @@ func handleImageRequestLegacy(logger *zap.Logger, cache *ristretto.Cache[string,
 }
 
 // processImageResponse handles the common image processing logic
-func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, params *imageContext) error {
+func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, params *validation.ImageContext) error {
 	cacheKey := cacheKey(params.Url, params)
 	cacheValue, ok := cache.Get(cacheKey)
 	if ok {
-		counters.SuccessfullyServed.WithLabelValues("image", params.Hostname, params.Url).Inc()
-		counters.ServedCached.WithLabelValues("image", params.Hostname, params.Url).Inc()
+		counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+		counters.ServedCached.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 
 		c.Set("Content-Type", cacheValue.ContentType)
 		return c.Send(cacheValue.Body)
 	}
 
-	response, err := http.Get(params.Url)
+	response, err := client.GetHTTPClient().Get(params.Url)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to fetch image")
 	}
@@ -91,12 +91,12 @@ func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cac
 		return c.Status(fiber.StatusForbidden).SendString("no content type received")
 	}
 
-	parsedContentType, _, err := goMime.ParseMediaType(responseContentType)
+	parsedContentType, _, err := mime.ParseMediaType(responseContentType)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to parse content type")
 	}
 
-	if !mime.IsImageMime(parsedContentType) {
+	if !validation.IsImageMime(parsedContentType) {
 		return c.Status(fiber.StatusForbidden).SendString(fmt.Sprintf("content type '%s' is not allowed", parsedContentType))
 	}
 
@@ -109,84 +109,85 @@ func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cac
 }
 
 // processImageData handles the actual image processing and encoding
-func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, params *imageContext, imageData []byte, contentType string) error {
+func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, params *validation.ImageContext, imageData []byte, contentType string) error {
 	cacheKey := cacheKey(params.Url, params)
 
-	if params.Quality != 100 || params.Webp {
-		img, err := readImageSlice(imageData, contentType)
+	// Early return for unmodified images (no quality change, no webp, no resize, no scale)
+	if params.Quality == 100 && !params.Webp && params.Width == 0 && params.Height == 0 && params.Scale == 0 {
+		c.Set("Content-Type", contentType)
+		cache.SetWithTTL(cacheKey, CacheValue{
+			Body:        imageData,
+			ContentType: contentType,
+		}, 1000, time.Duration(config.CacheTTL)*time.Second)
+
+		logger.Info("unmodified image served successfully", zap.String("content-type", contentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
+		counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+		return c.Send(imageData)
+	}
+
+	// Process image only when modifications are needed
+	img, err := readImageSlice(imageData, contentType)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).SendString("failed to read image")
+	}
+
+	if params.Width > 0 || params.Height > 0 {
+		img, err = resizeImage(img, params.Width, params.Height, params.Interpolation)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).SendString("failed to read image")
-		}
-
-		if params.Width > 0 || params.Height > 0 {
-			img, err = resizeImage(img, params.Width, params.Height, params.Interpolation)
-			if err != nil {
-				logger.Error("failed to resize image", zap.Error(err))
-			}
-		}
-
-		if params.Scale > 0 {
-			img, err = rescaleImage(img, params.Scale)
-			if err != nil {
-				logger.Error("failed to rescale image", zap.Error(err))
-			}
-		}
-
-		// Only encode to WebP if explicitly requested
-		if params.Webp {
-			c.Set("Content-Type", "image/webp")
-
-			buf := bytes.NewBuffer(nil)
-			options, err := encoder.NewLossyEncoderOptions(encoder.PresetDefault, float32(params.Quality))
-			if err != nil {
-				return c.Status(fiber.StatusInternalServerError).SendString("failed to create webp encoder options")
-			}
-			err = webp.Encode(buf, img, options)
-			if err != nil {
-				return c.Status(fiber.StatusInternalServerError).SendString("failed to encode image")
-			}
-
-			cache.SetWithTTL(cacheKey, CacheValue{
-				Body:        buf.Bytes(),
-				ContentType: "image/webp",
-			}, 1000, time.Duration(config.CacheTTL)*time.Second)
-
-			logger.Info("image served successfully", zap.String("content-type", "image/webp"), zap.String("origin", params.Hostname), zap.String("url", params.Url))
-
-			counters.SuccessfullyServed.WithLabelValues("image", params.Hostname, params.Url).Inc()
-
-			return c.Send(buf.Bytes())
-		} else {
-			// Use original format with quality adjustment
-			c.Set("Content-Type", contentType)
-
-			// For now, just return the processed image as the original format
-			// TODO: Implement quality adjustment for other formats
-			cache.SetWithTTL(cacheKey, CacheValue{
-				Body:        imageData,
-				ContentType: contentType,
-			}, 1000, time.Duration(config.CacheTTL)*time.Second)
-
-			logger.Info("image served successfully", zap.String("content-type", contentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
-
-			counters.SuccessfullyServed.WithLabelValues("image", params.Hostname, params.Url).Inc()
-
-			return c.Send(imageData)
+			logger.Error("failed to resize image", zap.Error(err))
 		}
 	}
 
-	c.Set("Content-Type", contentType)
+	if params.Scale > 0 {
+		img, err = rescaleImage(img, params.Scale)
+		if err != nil {
+			logger.Error("failed to rescale image", zap.Error(err))
+		}
+	}
 
-	cache.SetWithTTL(cacheKey, CacheValue{
-		Body:        imageData,
-		ContentType: contentType,
-	}, 1000, time.Duration(config.CacheTTL)*time.Second)
+	// Only encode to WebP if explicitly requested
+	if params.Webp {
+		c.Set("Content-Type", "image/webp")
 
-	logger.Info("image served successfully", zap.String("content-type", contentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
+		buf := pool.GetBuffer()
+		defer pool.PutBuffer(buf)
 
-	counters.SuccessfullyServed.WithLabelValues("image", params.Hostname, params.Url).Inc()
+		options, err := encoder.NewLossyEncoderOptions(encoder.PresetDefault, float32(params.Quality))
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to create webp encoder options")
+		}
+		err = webp.Encode(buf, img, options)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to encode image")
+		}
 
-	return c.Send(imageData)
+		cache.SetWithTTL(cacheKey, CacheValue{
+			Body:        buf.Bytes(),
+			ContentType: "image/webp",
+		}, 1000, time.Duration(config.CacheTTL)*time.Second)
+
+		logger.Info("image served successfully", zap.String("content-type", "image/webp"), zap.String("origin", params.Hostname), zap.String("url", params.Url))
+
+		counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+
+		return c.Send(buf.Bytes())
+	} else {
+		// Use original format with quality adjustment
+		c.Set("Content-Type", contentType)
+
+		// For now, just return the processed image as the original format
+		// TODO: Implement quality adjustment for other formats
+		cache.SetWithTTL(cacheKey, CacheValue{
+			Body:        imageData,
+			ContentType: contentType,
+		}, 1000, time.Duration(config.CacheTTL)*time.Second)
+
+		logger.Info("image served successfully", zap.String("content-type", contentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
+
+		counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+
+		return c.Send(imageData)
+	}
 }
 
 // handleImageUpload processes image upload requests with path parameters
@@ -206,7 +207,7 @@ func handleImageUpload(logger *zap.Logger, cache *ristretto.Cache[string, CacheV
 		}
 		defer imageFile.Close()
 
-		ok, status, err, params := ProcessImageUploadFromPath(logger, pathParams, config)
+		ok, status, err, params := validation.ProcessImageUploadFromPath(logger, pathParams, config)
 		if !ok {
 			return c.Status(status).SendString(err.Error())
 		}
@@ -216,12 +217,12 @@ func handleImageUpload(logger *zap.Logger, cache *ristretto.Cache[string, CacheV
 			return c.Status(fiber.StatusForbidden).SendString("no content type received")
 		}
 
-		parsedContentType, _, err := goMime.ParseMediaType(contentType)
+		parsedContentType, _, err := mime.ParseMediaType(contentType)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).SendString("failed to parse content type")
 		}
 
-		if !mime.IsImageMime(parsedContentType) {
+		if !validation.IsImageMime(parsedContentType) {
 			return c.Status(fiber.StatusForbidden).SendString(fmt.Sprintf("content type '%s' is not allowed", parsedContentType))
 		}
 
@@ -250,7 +251,7 @@ func handleImageUploadLegacy(logger *zap.Logger, cache *ristretto.Cache[string, 
 		}
 		defer imageFile.Close()
 
-		ok, status, err, params := processImageUpload(logger, c, config)
+		ok, status, err, params := validation.ProcessImageUpload(logger, c, config)
 		if !ok {
 			return c.Status(status).SendString(err.Error())
 		}
@@ -260,12 +261,12 @@ func handleImageUploadLegacy(logger *zap.Logger, cache *ristretto.Cache[string, 
 			return c.Status(fiber.StatusForbidden).SendString("no content type received")
 		}
 
-		parsedContentType, _, err := goMime.ParseMediaType(contentType)
+		parsedContentType, _, err := mime.ParseMediaType(contentType)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).SendString("failed to parse content type")
 		}
 
-		if !mime.IsImageMime(parsedContentType) {
+		if !validation.IsImageMime(parsedContentType) {
 			return c.Status(fiber.StatusForbidden).SendString(fmt.Sprintf("content type '%s' is not allowed", parsedContentType))
 		}
 

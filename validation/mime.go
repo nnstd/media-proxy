@@ -1,4 +1,4 @@
-package mime
+package validation
 
 var imageMimeTypes = []string{
 	"image/jpeg",

@@ -1,19 +1,19 @@
 package routes
 
 import (
-	"bytes"
 	"fmt"
-	"net/http"
+	"mime"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
 
 	"image/jpeg"
+	"media-proxy/client"
 	"media-proxy/config"
 	"media-proxy/metrics"
-	"media-proxy/mime"
-	goMime "mime"
+	"media-proxy/pool"
+	"media-proxy/validation"
 
 	"github.com/dgraph-io/ristretto/v2"
 	"github.com/kolesa-team/go-webp/encoder"
@@ -35,7 +35,7 @@ func handleVideoPreviewRequest(logger *zap.Logger, cache *ristretto.Cache[string
 		pathParams := c.Params("*")
 		logger.Info("video preview request received", zap.String("pathParams", pathParams))
 
-		ok, status, err, params := ProcessImageContextFromPath(logger, pathParams, config)
+		ok, status, err, params := validation.ProcessImageContextFromPath(logger, pathParams, config)
 		if !ok {
 			return c.Status(status).SendString(err.Error())
 		}
@@ -49,7 +49,7 @@ func handleVideoPreviewRequestLegacy(logger *zap.Logger, cache *ristretto.Cache[
 	return func(c *fiber.Ctx) error {
 		logger.Info("video preview request received", zap.String("url", c.Query("url")))
 
-		ok, status, err, params := processImageContext(logger, c, config)
+		ok, status, err, params := validation.ProcessImageContext(logger, c, config)
 		if !ok {
 			return c.Status(status).SendString(err.Error())
 		}
@@ -59,19 +59,19 @@ func handleVideoPreviewRequestLegacy(logger *zap.Logger, cache *ristretto.Cache[
 }
 
 // processVideoPreview handles the common video preview processing logic
-func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, params *imageContext) error {
+func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, params *validation.ImageContext) error {
 	cacheKey := cacheKey(params.Url, params)
 	cacheValue, ok := cache.Get(cacheKey)
 	if ok {
-		counters.SuccessfullyServed.WithLabelValues("video-preview", params.Hostname, params.Url).Inc()
-		counters.ServedCached.WithLabelValues("video-preview", params.Hostname, params.Url).Inc()
+		counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+		counters.ServedCached.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 
 		c.Set("Content-Type", cacheValue.ContentType)
 		return c.Send(cacheValue.Body)
 	}
 
 	// First check if it's a video by doing a HEAD request
-	headResp, err := http.Get(params.Url)
+	headResp, err := client.GetHTTPClient().Get(params.Url)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to check video")
 	}
@@ -86,12 +86,12 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 		return c.Status(fiber.StatusForbidden).SendString("no content type received")
 	}
 
-	parsedContentType, _, err := goMime.ParseMediaType(responseContentType)
+	parsedContentType, _, err := mime.ParseMediaType(responseContentType)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to parse content type")
 	}
 
-	if !mime.IsVideoMime(parsedContentType) {
+	if !validation.IsVideoMime(parsedContentType) {
 		return c.Status(fiber.StatusForbidden).SendString(fmt.Sprintf("content type '%s' is not allowed", parsedContentType))
 	}
 
@@ -119,7 +119,9 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 	}
 
 	if params.Webp {
-		buf := bytes.NewBuffer(nil)
+		buf := pool.GetBuffer()
+		defer pool.PutBuffer(buf)
+
 		options, err := encoder.NewLossyEncoderOptions(encoder.PresetDefault, float32(params.Quality))
 		if err != nil {
 			logger.Error("failed to create webp encoder options", zap.Error(err))
@@ -140,12 +142,14 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 
 		logger.Info("video preview served successfully", zap.String("original-content-type", parsedContentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
 
-		counters.SuccessfullyServed.WithLabelValues("video-preview", params.Hostname, params.Url).Inc()
+		counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 
 		return c.Send(buf.Bytes())
 	}
 
-	buf := bytes.NewBuffer(nil)
+	buf := pool.GetBuffer()
+	defer pool.PutBuffer(buf)
+
 	err = jpeg.Encode(buf, frameImage, &jpeg.Options{Quality: params.Quality})
 	if err != nil {
 		logger.Error("failed to encode jpeg", zap.Error(err))
@@ -161,7 +165,7 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 
 	logger.Info("video preview served successfully", zap.String("original-content-type", parsedContentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
 
-	counters.SuccessfullyServed.WithLabelValues("video-preview", params.Hostname, params.Url).Inc()
+	counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 
 	return c.Send(buf.Bytes())
 }

@@ -1,4 +1,4 @@
-package routes
+package validation
 
 import (
 	"crypto/hmac"
@@ -10,13 +10,14 @@ import (
 	"strings"
 
 	"media-proxy/config"
+	"media-proxy/pool"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/nfnt/resize"
 	"go.uber.org/zap"
 )
 
-type imageContext struct {
+type ImageContext struct {
 	Url string
 
 	Quality int
@@ -32,7 +33,7 @@ type imageContext struct {
 	Hostname string
 }
 
-func (c *imageContext) String() string {
+func (c *ImageContext) String() string {
 	return fmt.Sprintf("quality=%d;width=%d;height=%d;scale=%f;interpolation=%d;webp=%t", c.Quality, c.Width, c.Height, c.Scale, c.Interpolation, c.Webp)
 }
 
@@ -145,7 +146,7 @@ func compareHmac(url, providedSignature, secret string) bool {
 }
 
 // ProcessImageUploadFromPath processes image upload parameters from path
-func ProcessImageUploadFromPath(logger *zap.Logger, pathParams string, config *config.Config) (bool, int, error, *imageContext) {
+func ProcessImageUploadFromPath(logger *zap.Logger, pathParams string, config *config.Config) (bool, int, error, *ImageContext) {
 	params, err := ParsePathParams(pathParams)
 	if err != nil {
 		return false, fiber.StatusBadRequest, fmt.Errorf("invalid path parameters: %w", err), nil
@@ -172,7 +173,7 @@ func ProcessImageUploadFromPath(logger *zap.Logger, pathParams string, config *c
 		params.Webp = config.Webp
 	}
 
-	return true, fiber.StatusOK, nil, &imageContext{
+	return true, fiber.StatusOK, nil, &ImageContext{
 		Quality:       params.Quality,
 		Width:         params.Width,
 		Height:        params.Height,
@@ -182,7 +183,7 @@ func ProcessImageUploadFromPath(logger *zap.Logger, pathParams string, config *c
 	}
 }
 
-func processImageUpload(logger *zap.Logger, c *fiber.Ctx, config *config.Config) (ok bool, status int, err error, params *imageContext) {
+func ProcessImageUpload(logger *zap.Logger, c *fiber.Ctx, config *config.Config) (ok bool, status int, err error, params *ImageContext) {
 	token := c.Query("token")
 	if token != config.Token {
 		return false, fiber.StatusForbidden, fmt.Errorf("invalid token"), nil
@@ -211,7 +212,7 @@ func processImageUpload(logger *zap.Logger, c *fiber.Ctx, config *config.Config)
 
 	webp := c.QueryBool("webp", config.Webp)
 
-	return true, fiber.StatusOK, nil, &imageContext{
+	return true, fiber.StatusOK, nil, &ImageContext{
 		Quality:       quality,
 		Width:         width,
 		Height:        height,
@@ -222,7 +223,7 @@ func processImageUpload(logger *zap.Logger, c *fiber.Ctx, config *config.Config)
 }
 
 // ProcessImageContextFromPath processes image context from path parameters
-func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *config.Config) (bool, int, error, *imageContext) {
+func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *config.Config) (bool, int, error, *ImageContext) {
 	params, err := ParsePathParams(pathParams)
 	if err != nil {
 		return false, fiber.StatusBadRequest, fmt.Errorf("invalid path parameters: %w", err), nil
@@ -247,7 +248,7 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 		}
 	}
 
-	validOrigin, hostname := validateUrl(logger, urlParam, config.AllowedOrigins)
+	validOrigin, hostname := pool.ValidateUrl(logger, urlParam, config.AllowedOrigins)
 	if !validOrigin {
 		return false, fiber.StatusForbidden, fmt.Errorf("url is not allowed"), nil
 	}
@@ -269,7 +270,7 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 		params.Webp = config.Webp
 	}
 
-	return true, fiber.StatusOK, nil, &imageContext{
+	return true, fiber.StatusOK, nil, &ImageContext{
 		Url:           urlParam,
 		Quality:       params.Quality,
 		Width:         params.Width,
@@ -281,7 +282,7 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 	}
 }
 
-func processImageContext(logger *zap.Logger, c *fiber.Ctx, config *config.Config) (ok bool, status int, err error, params *imageContext) {
+func ProcessImageContext(logger *zap.Logger, c *fiber.Ctx, config *config.Config) (ok bool, status int, err error, params *ImageContext) {
 	urlParam := c.Query("url")
 	if urlParam == "" {
 		return false, fiber.StatusBadRequest, fmt.Errorf("url is required"), nil
@@ -298,7 +299,7 @@ func processImageContext(logger *zap.Logger, c *fiber.Ctx, config *config.Config
 		}
 	}
 
-	validOrigin, hostname := validateUrl(logger, urlParam, config.AllowedOrigins)
+	validOrigin, hostname := pool.ValidateUrl(logger, urlParam, config.AllowedOrigins)
 	if !validOrigin {
 		return false, fiber.StatusForbidden, fmt.Errorf("url is not allowed"), nil
 	}
@@ -326,7 +327,7 @@ func processImageContext(logger *zap.Logger, c *fiber.Ctx, config *config.Config
 
 	webp := c.QueryBool("webp", config.Webp)
 
-	return true, fiber.StatusOK, nil, &imageContext{
+	return true, fiber.StatusOK, nil, &ImageContext{
 		Url:           urlParam,
 		Quality:       quality,
 		Width:         width,
@@ -337,4 +338,32 @@ func processImageContext(logger *zap.Logger, c *fiber.Ctx, config *config.Config
 
 		Hostname: hostname,
 	}
+}
+
+// ValidateFileSize checks if the file size is within acceptable limits
+func ValidateFileSize(size int64, maxSizeMB int) error {
+	if maxSizeMB <= 0 {
+		return nil // No limit set
+	}
+
+	maxSizeBytes := int64(maxSizeMB) * 1024 * 1024
+	if size > maxSizeBytes {
+		return fmt.Errorf("file size %d bytes exceeds maximum allowed size of %d MB", size, maxSizeMB)
+	}
+
+	return nil
+}
+
+// ValidateContentLength checks Content-Length header if present
+func ValidateContentLength(contentLength string, maxSizeMB int) error {
+	if contentLength == "" || maxSizeMB <= 0 {
+		return nil
+	}
+
+	size, err := strconv.ParseInt(contentLength, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid content length: %s", contentLength)
+	}
+
+	return ValidateFileSize(size, maxSizeMB)
 }
