@@ -12,6 +12,9 @@ A high-performance media proxy service built with Go and Fiber that provides sec
 - **Health Checks**: Built-in health check endpoint
 - **Compression**: Automatic response compression
 - **Structured Logging**: JSON-formatted logging with Zap
+- **Path-based Parameters**: Clean URL structure with parameters in the path
+- **HMAC Signatures**: Optional URL signing for enhanced security
+- **Image Upload**: Direct image upload with processing capabilities
 
 ## Supported Media Types
 
@@ -77,10 +80,14 @@ The service is configured via environment variables:
 | `APP_CACHE_MAX_COST` | Cache max cost in bytes | No | `1073741824` (1GB) |
 | `APP_CACHE_NUM_COUNTERS` | Cache num counters | No | `10000000` (10M) |
 | `APP_CACHE_BUFFER_ITEMS` | Cache buffer items | No | `64` |
+| `APP_TOKEN` | Token for image upload authentication | No | Empty |
+| `APP_HMAC_KEY` | HMAC key for URL signing | No | Empty |
 
 ### Example Configuration
 ```bash
 export APP_ALLOWED_ORIGINS="example.com,cdn.example.com,media.example.org"
+export APP_TOKEN="your-upload-token"
+export APP_HMAC_KEY="your-hmac-secret-key"
 ```
 
 ## API Endpoints
@@ -92,8 +99,51 @@ GET /health
 Returns the health status of the service.
 
 ### Image Proxy
+
+#### New Path-based Format (Recommended)
 ```
-GET /image?url=<image_url>&quality=<1-100>&webp=<true|false>&width=<width>&height=<height>&scale=<scale>&interpolation=<interpolation>
+GET /images/q:<quality>/w:<width>/h:<height>/s:<scale>/i:<interpolation>/webp/sig:<signature>/{base64-encoded-url}
+```
+
+**Path Parameters:**
+- `q` or `quality`: Image quality for optimization (1-100, default: 100)
+- `w` or `width`: Width of the image (default: 0)
+- `h` or `height`: Height of the image (default: 0)
+- `s` or `scale`: Scale factor for the image (0-1, default: 0)
+- `i` or `interpolation`: Interpolation method for resizing (0-5, default: 5)
+- `webp`: Force conversion to WebP format (flag, no value needed)
+- `sig` or `signature`: HMAC signature for URL validation (optional)
+- `{base64-encoded-url}`: Base64 URL-encoded image URL (required)
+
+**Interpolation methods:**
+- 0: Nearest-neighbor interpolation
+- 1: Bilinear interpolation
+- 2: Bicubic interpolation
+- 3: Mitchell-Netravali interpolation
+- 4: Lanczos2 interpolation
+- 5: Lanczos3 interpolation
+
+**Examples:**
+```bash
+# Basic image proxy (original format)
+curl "http://localhost:3000/images/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc="
+
+# Convert to WebP with quality optimization
+curl "http://localhost:3000/images/q:85/webp/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc="
+
+# Resize image with specific dimensions
+curl "http://localhost:3000/images/w:800/h:600/q:90/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc="
+
+# Rescale image with custom interpolation
+curl "http://localhost:3000/images/s:0.5/i:2/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc="
+
+# With HMAC signature for security
+curl "http://localhost:3000/images/sig:abc123/q:75/webp/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc="
+```
+
+#### Legacy Query-based Format (Backward Compatibility)
+```
+GET /image?url=<image_url>&quality=<1-100>&webp=<true|false>&width=<width>&height=<height>&scale=<scale>&interpolation=<interpolation>&signature=<signature>
 ```
 
 **Parameters:**
@@ -104,14 +154,7 @@ GET /image?url=<image_url>&quality=<1-100>&webp=<true|false>&width=<width>&heigh
 - `height` (optional): Height of the image (default: 0)
 - `scale` (optional): Scale factor for the image (0-1, default: 0)
 - `interpolation` (optional): Interpolation method for resizing (0-5, default: 5)
-
-**Interpolation methods:**
-- 0: Nearest-neighbor interpolation
-- 1: Bilinear interpolation
-- 2: Bicubic interpolation
-- 3: Mitchell-Netravali interpolation
-- 4: Lanczos2 interpolation
-- 5: Lanczos3 interpolation
+- `signature` (optional): HMAC signature for URL validation
 
 **Examples:**
 ```bash
@@ -143,15 +186,65 @@ curl "http://localhost:3000/image?url=https://example.com/book.epub&scale=0.3&qu
 curl "http://localhost:3000/image?url=https://example.com/presentation.pptx&width=1200&height=800"
 ```
 
-**Response:**
-- Returns the proxied image (original format or WebP if requested)
-- For documents: Returns first page/slide as an image
-- Content-Type: Original format or `image/webp` when converted
-- Validates that the URL origin is in the allowed list
-- Validates that the content type is a supported image or document format
-- Automatic format conversion when quality < 100 or webp=true
+### Image Upload
+
+#### New Path-based Format (Recommended)
+```
+POST /images/upload/q:<quality>/w:<width>/h:<height>/s:<scale>/i:<interpolation>/webp/t:<token>/{base64-encoded-url}
+```
+
+**Path Parameters:**
+- `q` or `quality`: Image quality for optimization (1-100, default: 100)
+- `w` or `width`: Width of the image (default: 0)
+- `h` or `height`: Height of the image (default: 0)
+- `s` or `scale`: Scale factor for the image (0-1, default: 0)
+- `i` or `interpolation`: Interpolation method for resizing (0-5, default: 5)
+- `webp`: Force conversion to WebP format (flag, no value needed)
+- `t` or `token`: Authentication token (required)
+- `{base64-encoded-url}`: Base64 URL-encoded image URL (required)
+
+**Request Body:** Raw image data
+
+**Examples:**
+```bash
+# Upload and process image
+curl -X POST "http://localhost:3000/images/upload/q:85/webp/t:your-token/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc=" \
+  --data-binary @image.jpg
+
+# Upload and resize image
+curl -X POST "http://localhost:3000/images/upload/w:800/h:600/t:your-token/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc=" \
+  --data-binary @image.jpg
+```
+
+#### Legacy Query-based Format (Backward Compatibility)
+```
+POST /images?url=<image_url>&quality=<1-100>&webp=<true|false>&width=<width>&height=<height>&scale=<scale>&interpolation=<interpolation>&token=<token>
+```
+
+**Parameters:** Same as legacy image proxy format, plus:
+- `token` (required): Authentication token
+
+**Request Body:** Raw image data
 
 ### Video Preview
+
+#### New Path-based Format (Recommended)
+```
+GET /videos/preview/q:<quality>/w:<width>/h:<height>/s:<scale>/i:<interpolation>/webp/sig:<signature>/{base64-encoded-url}
+```
+
+**Path Parameters:** Same as image proxy path format
+
+**Examples:**
+```bash
+# Basic video preview
+curl "http://localhost:3000/videos/preview/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ="
+
+# Video preview with resizing
+curl "http://localhost:3000/videos/preview/w:320/h:240/q:85/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ="
+```
+
+#### Legacy Query-based Format (Backward Compatibility)
 ```
 GET /video/preview?url=<video_url>
 ```
@@ -171,43 +264,82 @@ curl "http://localhost:3000/video/preview?url=https://example.com/video.mp4" -o 
 - Validates that the URL origin is in the allowed list
 - Validates that the content type is a supported video format
 
+## URL Encoding for Path-based Format
+
+For the new path-based format, you need to base64 URL-encode your image/video URLs:
+
+```bash
+# Example URL encoding
+echo -n "https://example.com/image.jpg" | base64 -w 0 | sed 's/+/-/g' | sed 's/\//_/g' | sed 's/=//g'
+# Result: aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc
+```
+
+## HMAC Signature Generation
+
+To generate HMAC signatures for secure URL validation:
+
+```bash
+# Using OpenSSL
+echo -n "https://example.com/image.jpg" | openssl dgst -sha256 -hmac "your-hmac-key" -binary | xxd -p
+
+# Using Python
+python3 -c "
+import hmac
+import hashlib
+url = 'https://example.com/image.jpg'
+key = 'your-hmac-key'
+signature = hmac.new(key.encode(), url.encode(), hashlib.sha256).hexdigest()
+print(signature)
+"
+```
+
 ## Usage Examples
 
 ### Basic Image Proxying
 ```bash
-# Proxy an image with default quality (original format)
-curl "http://localhost:3000/image?url=https://example.com/photo.jpg"
+# Path-based format (recommended)
+curl "http://localhost:3000/images/q:85/webp/aHR0cHM6Ly9leGFtcGxlLmNvbS9waG90by5qcGc="
 
-# Convert any image to WebP with quality optimization
+# Legacy query-based format
 curl "http://localhost:3000/image?url=https://example.com/photo.jpg&webp=true&quality=85"
-
-# Reduce quality without format conversion (triggers processing)
-curl "http://localhost:3000/image?url=https://example.com/photo.jpg&quality=75"
-
-# Force WebP conversion without quality change
-curl "http://localhost:3000/image?url=https://example.com/photo.png&webp=true"
 ```
 
 ### Video Preview Generation
 ```bash
-# Generate a thumbnail from a video
+# Path-based format (recommended)
+curl "http://localhost:3000/videos/preview/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" \
+  -H "Accept: image/jpeg" \
+  -o thumbnail.jpg
+
+# Legacy query-based format
 curl "http://localhost:3000/video/preview?url=https://example.com/video.mp4" \
   -H "Accept: image/jpeg" \
   -o thumbnail.jpg
 ```
 
+### Image Upload
+```bash
+# Path-based format (recommended)
+curl -X POST "http://localhost:3000/images/upload/q:90/webp/t:your-token/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc=" \
+  --data-binary @image.jpg
+
+# Legacy query-based format
+curl -X POST "http://localhost:3000/images?url=https://example.com/image.jpg&webp=true&quality=90&token=your-token" \
+  --data-binary @image.jpg
+```
+
 ### HTML Integration
 ```html
-<!-- Proxied image (original format) -->
-<img src="http://localhost:3000/image?url=https%3A//example.com/image.jpg" 
-     alt="Proxied image">
+<!-- Path-based format (recommended) -->
+<img src="http://localhost:3000/images/q:80/webp/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc=" 
+     alt="WebP optimized image">
 
-<!-- WebP optimized image -->
+<!-- Legacy query-based format -->
 <img src="http://localhost:3000/image?url=https%3A//example.com/image.jpg&webp=true&quality=80" 
      alt="WebP optimized image">
 
 <!-- Video thumbnail -->
-<img src="http://localhost:3000/video/preview?url=https%3A//example.com/video.mp4" 
+<img src="http://localhost:3000/videos/preview/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" 
      alt="Video thumbnail">
 ```
 
@@ -217,6 +349,8 @@ curl "http://localhost:3000/video/preview?url=https://example.com/video.mp4" \
 2. **MIME Type Validation**: Strict content type checking prevents processing of non-media files
 3. **URL Parsing**: Robust URL validation prevents malformed requests
 4. **No Direct File Access**: Service only processes HTTP/HTTPS URLs
+5. **HMAC Signatures**: Optional URL signing for enhanced security
+6. **Token Authentication**: Required authentication for image upload operations
 
 ## Development
 
@@ -224,6 +358,8 @@ curl "http://localhost:3000/video/preview?url=https://example.com/video.mp4" \
 ```bash
 # Set environment variables
 export APP_ALLOWED_ORIGINS="localhost,127.0.0.1,example.com"
+export APP_TOKEN="your-upload-token"
+export APP_HMAC_KEY="your-hmac-secret-key"
 
 # Run the service
 go run .
@@ -233,10 +369,16 @@ The service will start on port 3000.
 
 ### Testing
 ```bash
-# Test image proxy
+# Test path-based image proxy
+curl "http://localhost:3000/images/aHR0cHM6Ly9odHRwYmluLm9yZy9pbWFnZS9qcGVn"
+
+# Test legacy query-based image proxy
 curl "http://localhost:3000/image?url=https://httpbin.org/image/jpeg"
 
-# Test video preview (requires a valid video URL)
+# Test path-based video preview
+curl "http://localhost:3000/videos/preview/aHR0cHM6Ly9leGFtcGxlLmNvbS9zYW1wbGUubXA0"
+
+# Test legacy query-based video preview
 curl "http://localhost:3000/video/preview?url=https://example.com/sample.mp4"
 
 # Test health check
