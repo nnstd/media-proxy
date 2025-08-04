@@ -81,9 +81,6 @@ func extractFrameFromPosition(urlStr string, position string) (image.Image, erro
 		return nil, fmt.Errorf("failed to open codec: %w", err)
 	}
 
-	// Note: Seeking is not implemented in this version of astiav
-	// We'll read through the video to find the target frame
-
 	// Allocate packet and frame
 	packet := astiav.AllocPacket()
 	defer packet.Free()
@@ -97,6 +94,62 @@ func extractFrameFromPosition(urlStr string, position string) (image.Image, erro
 
 	// Optimization: For specific time targets, define tolerance for early exit
 	const timeToleranceSeconds = 0.1 // Exit if we're within 100ms of target
+
+	// NEW OPTIMIZATION: Use seeking for better performance when we have a specific target time, half position, or last position
+	if (targetTime > 0 && position != "first") || position == "last" {
+		var adjustedTargetTime float64
+		var adjustedTargetTimestamp int64
+
+		if position == "last" {
+			// For "last" position, seek to near the end of the video
+			duration := float64(inputFormatContext.Duration()) / 1000000.0 // Duration is in microseconds
+			if duration <= 0 {
+				// Fallback: estimate duration from stream duration if format duration is not available
+				streamDuration := float64(videoStream.Duration()) * float64(videoStream.TimeBase().Num()) / float64(videoStream.TimeBase().Den())
+				if streamDuration > 0 {
+					duration = streamDuration
+				}
+			}
+
+			if duration > 0 {
+				// Seek to last 10 seconds (or 90% of video if it's shorter than 10 seconds)
+				seekBackoffSeconds := 10.0
+				if duration < 10.0 {
+					seekBackoffSeconds = duration * 0.1 // Seek to 90% of the video
+				}
+				adjustedTargetTime = duration - seekBackoffSeconds
+				if adjustedTargetTime < 0 {
+					adjustedTargetTime = 0
+				}
+				adjustedTargetTimestamp = int64(adjustedTargetTime * float64(videoStream.TimeBase().Den()) / float64(videoStream.TimeBase().Num()))
+			}
+		} else {
+			// For specific time targets (including "half")
+			// For accuracy, seek slightly before the target (by 1-2 seconds) to ensure we don't miss the exact frame
+			seekBackoffSeconds := 2.0
+			if targetTime < 5.0 {
+				seekBackoffSeconds = targetTime * 0.2 // Use 20% backoff for short videos
+			}
+			adjustedTargetTime = targetTime - seekBackoffSeconds
+			if adjustedTargetTime < 0 {
+				adjustedTargetTime = 0
+			}
+			adjustedTargetTimestamp = int64(adjustedTargetTime * float64(videoStream.TimeBase().Den()) / float64(videoStream.TimeBase().Num()))
+		}
+
+		// Seek to approximately the target timestamp
+		// Use SeekFlagBackward to ensure we don't seek past the target frame
+		seekFlags := astiav.NewSeekFlags() // Use default flags for now, will add backward seeking if available
+		if err := inputFormatContext.SeekFrame(videoStreamIndex, adjustedTargetTimestamp, seekFlags); err != nil {
+			log.Printf("Seeking failed, falling back to linear search: %v", err)
+		} else {
+			// Flush the codec context after seeking by sending NULL packet to clear any buffered frames
+			if err := codecContext.SendPacket(nil); err != nil {
+				log.Printf("Warning: Failed to flush codec context: %v", err)
+			}
+			log.Printf("Successfully seeked to timestamp %d (target time: %.2fs)", adjustedTargetTimestamp, adjustedTargetTime)
+		}
+	}
 
 	// Optimization: Track if we've passed the target time for early exit
 	var passedTarget bool
@@ -148,8 +201,8 @@ func extractFrameFromPosition(urlStr string, position string) (image.Image, erro
 		if targetTime > 0 {
 			timeDiff := abs(currentTime - targetTime)
 
-			// Skip expensive frame conversion if we're more than 5 seconds away from target
-			if timeDiff > 5.0 && closestFrame == nil {
+			// Skip expensive frame conversion if we're more than 2 seconds away from target (reduced from 5 since we're seeking)
+			if timeDiff > 2.0 && closestFrame == nil {
 				continue
 			}
 
