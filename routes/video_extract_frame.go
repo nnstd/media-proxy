@@ -10,8 +10,14 @@ import (
 	"github.com/asticode/go-astiav"
 )
 
-// extractFrameFromPosition extracts a frame from a specific position in the video
+// extractFrameFromPosition extracts a frame from a specific position in the video with optimizations
 // position can be: "first", "half", "last", or a time in seconds (e.g., "30.5")
+//
+// Optimizations implemented:
+// - Early exit when target time tolerance is met
+// - Skip expensive frame conversion for frames far from target
+// - Reduced processing frequency for "last" position
+// - Smart frame skipping based on time distance from target
 func extractFrameFromPosition(urlStr string, position string) (image.Image, error) {
 	// Open input format context
 	inputFormatContext := astiav.AllocFormatContext()
@@ -89,6 +95,16 @@ func extractFrameFromPosition(urlStr string, position string) (image.Image, erro
 	var closestFrame image.Image
 	var closestTimeDiff float64 = -1
 
+	// Optimization: For specific time targets, define tolerance for early exit
+	const timeToleranceSeconds = 0.1 // Exit if we're within 100ms of target
+
+	// Optimization: Track if we've passed the target time for early exit
+	var passedTarget bool
+
+	// Optimization: Track frame processing to reduce overhead
+	var frameCount int64
+	var lastProcessedTime float64
+
 	// Read frames until we find the target frame or reach the end
 	for {
 		if err := inputFormatContext.ReadFrame(packet); err != nil {
@@ -124,7 +140,57 @@ func extractFrameFromPosition(urlStr string, position string) (image.Image, erro
 			continue
 		}
 
-		// Convert frame to image
+		// Calculate current frame time early to enable optimizations
+		currentTime := float64(frame.Pts()) * float64(videoStream.TimeBase().Num()) / float64(videoStream.TimeBase().Den())
+		frameCount++
+
+		// Optimization: For specific time targets, skip frames that are far from target
+		if targetTime > 0 {
+			timeDiff := abs(currentTime - targetTime)
+
+			// Skip expensive frame conversion if we're more than 5 seconds away from target
+			if timeDiff > 5.0 && closestFrame == nil {
+				continue
+			}
+
+			// Early exit if we've found a good enough frame and are moving away from target
+			if closestFrame != nil && timeDiff > closestTimeDiff && timeDiff < timeToleranceSeconds {
+				break
+			}
+
+			// Mark that we've passed the target time
+			if currentTime > targetTime {
+				passedTarget = true
+			}
+		}
+
+		// Optimization: For "last" position, we can skip frame conversion for most frames
+		// Only convert frames occasionally to update lastValidFrame, but always process the last few seconds
+		if position == "last" {
+			// Always process frames in the last 5 seconds, otherwise skip most frames
+			videoDuration := float64(inputFormatContext.Duration()) / 1000000.0
+			if videoDuration > 0 && currentTime < (videoDuration-5.0) {
+				// Only process every 30th frame to reduce processing overhead
+				if frameCount%30 != 0 {
+					continue
+				}
+			}
+		}
+
+		// Optimization: For better performance, avoid processing frames too frequently when far from target
+		if targetTime > 0 && lastProcessedTime > 0 {
+			timeSinceLastProcess := abs(currentTime - lastProcessedTime)
+			timeDiffFromTarget := abs(currentTime - targetTime)
+
+			// If we're far from target and processed a frame recently, skip this one
+			if timeDiffFromTarget > 2.0 && timeSinceLastProcess < 0.5 {
+				continue
+			}
+		}
+
+		lastProcessedTime = currentTime
+
+		// Convert frame to image (only for frames we might actually need)
 		img, err := frameToImage(frame)
 		if err != nil {
 			log.Printf("Failed to convert frame to image: %v, continuing...", err)
@@ -135,9 +201,6 @@ func extractFrameFromPosition(urlStr string, position string) (image.Image, erro
 		if lastValidFrame == nil {
 			lastValidFrame = img
 		}
-
-		// Calculate current frame time
-		currentTime := float64(frame.Pts()) * float64(videoStream.TimeBase().Num()) / float64(videoStream.TimeBase().Den())
 
 		// For "first" position, return immediately
 		if position == "first" {
@@ -156,6 +219,16 @@ func extractFrameFromPosition(urlStr string, position string) (image.Image, erro
 			if closestFrame == nil || timeDiff < closestTimeDiff {
 				closestFrame = img
 				closestTimeDiff = timeDiff
+
+				// Optimization: Early exit for "half" position if we're very close
+				if position == "half" && timeDiff < timeToleranceSeconds {
+					break
+				}
+			}
+
+			// Optimization: Early exit if we've passed target and have a good frame
+			if passedTarget && closestFrame != nil && timeDiff > closestTimeDiff {
+				break
 			}
 		} else if targetTime == -1 {
 			// For "last" position, keep updating the last valid frame
@@ -204,6 +277,15 @@ func calculateTargetTime(inputFormatContext *astiav.FormatContext, videoStream *
 	case "half":
 		// Calculate half of the video duration
 		duration := float64(inputFormatContext.Duration()) / 1000000.0 // Duration is in microseconds
+		if duration <= 0 {
+			// Fallback: estimate duration from stream duration if format duration is not available
+			streamDuration := float64(videoStream.Duration()) * float64(videoStream.TimeBase().Num()) / float64(videoStream.TimeBase().Den())
+			if streamDuration > 0 {
+				duration = streamDuration
+			} else {
+				return 0, fmt.Errorf("unable to determine video duration for half position")
+			}
+		}
 		return duration / 2, nil
 	default:
 		// Try to parse as a time in seconds
