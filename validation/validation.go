@@ -30,11 +30,14 @@ type ImageContext struct {
 
 	Webp bool
 
+	// Video-specific parameters
+	FramePosition string // "first", "half", "last", or time in seconds
+
 	Hostname string
 }
 
 func (c *ImageContext) String() string {
-	return fmt.Sprintf("quality=%d;width=%d;height=%d;scale=%f;interpolation=%d;webp=%t", c.Quality, c.Width, c.Height, c.Scale, c.Interpolation, c.Webp)
+	return fmt.Sprintf("quality=%d;width=%d;height=%d;scale=%f;interpolation=%d;webp=%t;framePosition=%s", c.Quality, c.Width, c.Height, c.Scale, c.Interpolation, c.Webp, c.FramePosition)
 }
 
 // PathParams holds the parsed parameters from the URL path
@@ -45,13 +48,14 @@ type PathParams struct {
 	Scale         float64
 	Interpolation resize.InterpolationFunction
 	Webp          bool
+	FramePosition string
 	Signature     string
 	Token         string
 	EncodedURL    string
 }
 
 // ParsePathParams extracts parameters from the URL path
-// Expected format: /images/q:50/w:500/h:300/s:0.8/i:2/webp/sig:abc123/{base64-url}
+// Expected format: /images/q:50/w:500/h:300/s:0.8/i:2/webp/fp:half/sig:abc123/{base64-url}
 func ParsePathParams(pathParams string) (*PathParams, error) {
 	params := &PathParams{
 		Quality:       100, // default values
@@ -60,6 +64,7 @@ func ParsePathParams(pathParams string) (*PathParams, error) {
 		Scale:         0,
 		Interpolation: resize.Lanczos3,
 		Webp:          false,
+		FramePosition: "first", // default to first frame
 	}
 
 	parts := strings.Split(strings.Trim(pathParams, "/"), "/")
@@ -113,6 +118,8 @@ func ParsePathParams(pathParams string) (*PathParams, error) {
 			}
 		case "sig", "signature":
 			params.Signature = value
+		case "fp", "framePosition":
+			params.FramePosition = value
 		case "t", "token":
 			params.Token = value
 		}
@@ -180,6 +187,7 @@ func ProcessImageUploadFromPath(logger *zap.Logger, pathParams string, config *c
 		Scale:         params.Scale,
 		Interpolation: params.Interpolation,
 		Webp:          params.Webp,
+		FramePosition: params.FramePosition,
 	}
 }
 
@@ -278,6 +286,7 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 		Scale:         params.Scale,
 		Interpolation: params.Interpolation,
 		Webp:          params.Webp,
+		FramePosition: params.FramePosition,
 		Hostname:      hostname,
 	}
 }
@@ -326,6 +335,7 @@ func ProcessImageContext(logger *zap.Logger, c *fiber.Ctx, config *config.Config
 	}
 
 	webp := c.QueryBool("webp", config.Webp)
+	framePosition := c.Query("framePosition", "first")
 
 	return true, fiber.StatusOK, nil, &ImageContext{
 		Url:           urlParam,
@@ -335,6 +345,7 @@ func ProcessImageContext(logger *zap.Logger, c *fiber.Ctx, config *config.Config
 		Scale:         scale,
 		Interpolation: resize.InterpolationFunction(interpolation),
 		Webp:          webp,
+		FramePosition: framePosition,
 
 		Hostname: hostname,
 	}

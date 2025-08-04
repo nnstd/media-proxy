@@ -95,10 +95,10 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 		return c.Status(fiber.StatusForbidden).SendString(fmt.Sprintf("content type '%s' is not allowed", parsedContentType))
 	}
 
-	// Extract first frame using streaming approach
-	frameImage, err := extractFirstFrame(params.Url)
+	// Extract frame from specified position
+	frameImage, err := extractFrameFromPosition(params.Url, params.FramePosition)
 	if err != nil {
-		logger.Error("failed to extract first frame", zap.Error(err))
+		logger.Error("failed to extract frame", zap.Error(err), zap.String("position", params.FramePosition))
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to extract video preview")
 	}
 

@@ -6,7 +6,7 @@ A high-performance media proxy service built with Go and Fiber that provides sec
 
 - **Image Proxying**: Proxy images from allowed origins with optional quality control, WebP conversion, resizing, and rescaling
 - **WebP Conversion**: Convert any supported image format to WebP with quality optimization
-- **Video Preview Generation**: Extract first frame thumbnails from video files
+- **Video Preview Generation**: Extract frame thumbnails from video files at specific positions (first, middle, last, or custom time)
 - **Origin Validation**: Whitelist-based origin control for security
 - **MIME Type Validation**: Strict content type checking for both images and videos
 - **Health Checks**: Built-in health check endpoint
@@ -230,31 +230,63 @@ POST /images?url=<image_url>&quality=<1-100>&webp=<true|false>&width=<width>&hei
 
 #### New Path-based Format (Recommended)
 ```
-GET /videos/preview/q:<quality>/w:<width>/h:<height>/s:<scale>/i:<interpolation>/webp/sig:<signature>/{base64-encoded-url}
+GET /videos/preview/q:<quality>/w:<width>/h:<height>/s:<scale>/i:<interpolation>/fp:<framePosition>/webp/sig:<signature>/{base64-encoded-url}
 ```
 
-**Path Parameters:** Same as image proxy path format
+**Path Parameters:**
+- `q` or `quality`: Image quality for optimization (1-100, default: 100)
+- `w` or `width`: Width of the image (default: 0)
+- `h` or `height`: Height of the image (default: 0)
+- `s` or `scale`: Scale factor for the image (0-1, default: 0)
+- `i` or `interpolation`: Interpolation method for resizing (0-5, default: 5)
+- `fp` or `framePosition`: Frame position to extract (default: "first")
+- `webp`: Force conversion to WebP format (flag, no value needed)
+- `sig` or `signature`: HMAC signature for URL validation (optional)
+- `{base64-encoded-url}`: Base64 URL-encoded video URL (required)
+
+**Frame Position Options:**
+- `first`: Extract the first frame (default)
+- `half`: Extract a frame from the middle of the video
+- `last`: Extract the last frame
+- `30.5`: Extract a frame at 30.5 seconds (supports decimal seconds)
 
 **Examples:**
 ```bash
-# Basic video preview
+# Basic video preview (first frame)
 curl "http://localhost:3000/videos/preview/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ="
 
-# Video preview with resizing
-curl "http://localhost:3000/videos/preview/w:320/h:240/q:85/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ="
+# Video preview from the middle of the video
+curl "http://localhost:3000/videos/preview/fp:half/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ="
+
+# Video preview from the last frame
+curl "http://localhost:3000/videos/preview/fp:last/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ="
+
+# Video preview from 30 seconds into the video
+curl "http://localhost:3000/videos/preview/fp:30/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ="
+
+# Video preview from the middle with resizing and WebP conversion
+curl "http://localhost:3000/videos/preview/fp:half/w:320/h:240/q:85/webp/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ="
 ```
 
 #### Legacy Query-based Format (Backward Compatibility)
 ```
-GET /video/preview?url=<video_url>
+GET /video/preview?url=<video_url>&framePosition=<position>
 ```
 
 **Parameters:**
 - `url` (required): The URL of the video to generate a preview from
+- `framePosition` (optional): Frame position to extract ("first", "half", "last", or time in seconds, default: "first")
 
-**Example:**
+**Examples:**
 ```bash
+# Basic video preview (first frame)
 curl "http://localhost:3000/video/preview?url=https://example.com/video.mp4" -o preview.jpg
+
+# Video preview from the middle of the video
+curl "http://localhost:3000/video/preview?url=https://example.com/video.mp4&framePosition=half" -o preview.jpg
+
+# Video preview from 30 seconds into the video
+curl "http://localhost:3000/video/preview?url=https://example.com/video.mp4&framePosition=30" -o preview.jpg
 ```
 
 **Response:**
@@ -306,13 +338,23 @@ curl "http://localhost:3000/image?url=https://example.com/photo.jpg&webp=true&qu
 
 ### Video Preview Generation
 ```bash
-# Path-based format (recommended)
+# Path-based format (recommended) - first frame
 curl "http://localhost:3000/videos/preview/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" \
   -H "Accept: image/jpeg" \
   -o thumbnail.jpg
 
-# Legacy query-based format
+# Path-based format - frame from middle of video
+curl "http://localhost:3000/videos/preview/fp:half/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" \
+  -H "Accept: image/jpeg" \
+  -o thumbnail.jpg
+
+# Legacy query-based format - first frame
 curl "http://localhost:3000/video/preview?url=https://example.com/video.mp4" \
+  -H "Accept: image/jpeg" \
+  -o thumbnail.jpg
+
+# Legacy query-based format - frame from middle of video
+curl "http://localhost:3000/video/preview?url=https://example.com/video.mp4&framePosition=half" \
   -H "Accept: image/jpeg" \
   -o thumbnail.jpg
 ```
@@ -341,6 +383,10 @@ curl -X POST "http://localhost:3000/images?url=https://example.com/image.jpg&web
 <!-- Video thumbnail -->
 <img src="http://localhost:3000/videos/preview/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" 
      alt="Video thumbnail">
+
+<!-- Video thumbnail from middle of video -->
+<img src="http://localhost:3000/videos/preview/fp:half/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" 
+     alt="Video thumbnail from middle">
 ```
 
 ## Security Features
@@ -375,11 +421,17 @@ curl "http://localhost:3000/images/aHR0cHM6Ly9odHRwYmluLm9yZy9pbWFnZS9qcGVn"
 # Test legacy query-based image proxy
 curl "http://localhost:3000/image?url=https://httpbin.org/image/jpeg"
 
-# Test path-based video preview
+# Test path-based video preview (first frame)
 curl "http://localhost:3000/videos/preview/aHR0cHM6Ly9leGFtcGxlLmNvbS9zYW1wbGUubXA0"
 
-# Test legacy query-based video preview
+# Test path-based video preview (middle frame)
+curl "http://localhost:3000/videos/preview/fp:half/aHR0cHM6Ly9leGFtcGxlLmNvbS9zYW1wbGUubXA0"
+
+# Test legacy query-based video preview (first frame)
 curl "http://localhost:3000/video/preview?url=https://example.com/sample.mp4"
+
+# Test legacy query-based video preview (middle frame)
+curl "http://localhost:3000/video/preview?url=https://example.com/sample.mp4&framePosition=half"
 
 # Test health check
 curl "http://localhost:3000/health"
