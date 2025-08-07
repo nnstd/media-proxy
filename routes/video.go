@@ -139,6 +139,7 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 		}, 1000, time.Duration(config.CacheTTL)*time.Second)
 
 		c.Set("Content-Type", "image/webp")
+		c.Set("Cache-Control", fmt.Sprintf("public, max-age=%d", config.HTTPCacheTTL))
 
 		logger.Info("video preview served successfully", zap.String("original-content-type", parsedContentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
 
@@ -162,6 +163,7 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 	}, 1000, time.Duration(config.CacheTTL)*time.Second)
 
 	c.Set("Content-Type", "image/jpeg")
+	c.Set("Cache-Control", fmt.Sprintf("public, max-age=%d", config.HTTPCacheTTL))
 
 	logger.Info("video preview served successfully", zap.String("original-content-type", parsedContentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
 

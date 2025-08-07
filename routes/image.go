@@ -115,6 +115,8 @@ func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[s
 	// Early return for unmodified images (no quality change, no webp, no resize, no scale)
 	if params.Quality == 100 && !params.Webp && params.Width == 0 && params.Height == 0 && params.Scale == 0 {
 		c.Set("Content-Type", contentType)
+		c.Set("Cache-Control", fmt.Sprintf("public, max-age=%d", config.HTTPCacheTTL))
+
 		cache.SetWithTTL(cacheKey, CacheValue{
 			Body:        imageData,
 			ContentType: contentType,
@@ -148,6 +150,7 @@ func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[s
 	// Only encode to WebP if explicitly requested
 	if params.Webp {
 		c.Set("Content-Type", "image/webp")
+		c.Set("Cache-Control", fmt.Sprintf("public, max-age=%d", config.HTTPCacheTTL))
 
 		buf := pool.GetBuffer()
 		defer pool.PutBuffer(buf)
@@ -174,6 +177,7 @@ func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[s
 	} else {
 		// Use original format with quality adjustment
 		c.Set("Content-Type", contentType)
+		c.Set("Cache-Control", fmt.Sprintf("public, max-age=%d", config.HTTPCacheTTL))
 
 		// For now, just return the processed image as the original format
 		// TODO: Implement quality adjustment for other formats

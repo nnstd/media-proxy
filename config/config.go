@@ -21,6 +21,7 @@ type Config struct {
 	HTTPTimeout      int `json:"httpTimeoutSeconds" env:"APP_HTTP_TIMEOUT_SECONDS"`
 	HTTPMaxIdleConns int `json:"httpMaxIdleConns" env:"APP_HTTP_MAX_IDLE_CONNS"`
 	HTTPIdleTimeout  int `json:"httpIdleTimeoutSeconds" env:"APP_HTTP_IDLE_TIMEOUT_SECONDS"`
+	HTTPCacheTTL     int `json:"httpCacheTTLSeconds" env:"APP_HTTP_CACHE_TTL_SECONDS"`
 	MaxImageSize     int `json:"maxImageSizeMB" env:"APP_MAX_IMAGE_SIZE_MB"`
 	MaxVideoSize     int `json:"maxVideoSizeMB" env:"APP_MAX_VIDEO_SIZE_MB"`
 	URLCacheSize     int `json:"urlCacheSize" env:"APP_URL_CACHE_SIZE"`

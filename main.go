@@ -11,8 +11,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"media-proxy/config"
-	fiberprometheus "media-proxy/middlewares/prometheus"
 	"media-proxy/metrics"
+	fiberprometheus "media-proxy/middlewares/prometheus"
 	"media-proxy/routes"
 
 	"github.com/dgraph-io/ristretto/v2"
@@ -43,6 +43,10 @@ func main() {
 		NumCounters: 1e7,     // number of keys to track frequency of (10M).
 		MaxCost:     1 << 30, // maximum cost of cache (1GB).
 		BufferItems: 64,      // number of keys per Get buffer.
+	}
+
+	if config.HTTPCacheTTL == 0 {
+		config.HTTPCacheTTL = 1800 // 30 minutes
 	}
 
 	if config.CacheBufferItems > 0 {
