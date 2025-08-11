@@ -9,7 +9,6 @@ import (
 	"go.uber.org/zap"
 
 	"image/jpeg"
-	"media-proxy/client"
 	"media-proxy/config"
 	"media-proxy/metrics"
 	"media-proxy/pool"
@@ -71,17 +70,11 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 	}
 
 	// First check if it's a video by doing a HEAD request
-	headResp, err := client.GetHTTPClient().Get(params.Url)
+	responseContentType, err := validation.GetContentType(params.Url)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to check video")
 	}
-	defer func() {
-		if closeErr := headResp.Body.Close(); closeErr != nil {
-			logger.Error("failed to close head response body", zap.Error(closeErr))
-		}
-	}()
 
-	responseContentType := headResp.Header.Get("Content-Type")
 	if responseContentType == "" {
 		return c.Status(fiber.StatusForbidden).SendString("no content type received")
 	}

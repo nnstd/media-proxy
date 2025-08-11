@@ -1,5 +1,7 @@
 package validation
 
+import "media-proxy/client"
+
 var imageMimeTypes = []string{
 	"image/jpeg",
 	"image/png",
@@ -46,4 +48,20 @@ func IsVideoMime(mimeType string) bool {
 	}
 
 	return false
+}
+
+func GetContentType(url string) (string, error) {
+	// First try HEAD request
+	headResp, err := client.GetHTTPClient().Head(url)
+	if err == nil {
+		return headResp.Header.Get("Content-Type"), nil
+	}
+
+	// If HEAD fails, try GET request
+	getResp, err := client.GetHTTPClient().Get(url)
+	if err != nil {
+		return "", err
+	}
+
+	return getResp.Header.Get("Content-Type"), nil
 }
