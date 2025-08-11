@@ -1,5 +1,19 @@
 # Media Proxy
 
+## Optional S3 result storage
+
+Set these environment variables to enable persistent result caching in S3/MinIO. If an object exists, it will be served directly without reprocessing.
+
+- `S3_ENABLED` (bool) — enable S3 storage, default false
+- `S3_ENDPOINT` — e.g. `play.min.io:9000` or your MinIO/S3 endpoint
+- `S3_ACCESS_KEY_ID`
+- `S3_SECRET_ACCESS_KEY`
+- `S3_BUCKET` — target bucket
+- `S3_SSL` (bool) — default true for S3, false for plain MinIO if needed
+- `S3_PREFIX` — optional key prefix, e.g. `media-proxy/`
+
+MinIO Go SDK is used under the hood. See the official docs: [minio/minio-go](https://github.com/minio/minio-go).
+
 A high-performance media proxy service built with Go and Fiber that provides secure proxying for images and video preview generation. This service allows you to proxy media content from allowed origins while maintaining security and performance.
 
 ## Features

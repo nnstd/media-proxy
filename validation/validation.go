@@ -34,6 +34,9 @@ type ImageContext struct {
 	FramePosition string // "first", "half", "last", or time in seconds
 
 	Hostname string
+
+	// Optional explicit S3 object key provided by request (requires signature)
+	CustomObjectKey string
 }
 
 func (c *ImageContext) String() string {
@@ -52,6 +55,7 @@ type PathParams struct {
 	Signature     string
 	Token         string
 	EncodedURL    string
+	Location      string
 }
 
 // ParsePathParams extracts parameters from the URL path
@@ -122,6 +126,8 @@ func ParsePathParams(pathParams string) (*PathParams, error) {
 			params.FramePosition = value
 		case "t", "token":
 			params.Token = value
+		case "loc", "location":
+			params.Location = value
 		}
 	}
 
@@ -150,6 +156,39 @@ func compareHmac(url, providedSignature, secret string) bool {
 
 	// Use constant-time comparison
 	return hmac.Equal(expectedMAC, providedMAC)
+}
+
+// compareHmacForMessage validates HMAC for an arbitrary message
+func compareHmacForMessage(message, providedSignature, secret string) bool {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(message))
+	expectedMAC := mac.Sum(nil)
+	providedMAC, err := hex.DecodeString(providedSignature)
+	if err != nil {
+		return false
+	}
+	return hmac.Equal(expectedMAC, providedMAC)
+}
+
+// sanitizeLocation ensures S3 object key is in an acceptable format
+func sanitizeLocation(loc string) (string, error) {
+	if len(loc) == 0 || len(loc) > 512 {
+		return "", fmt.Errorf("invalid location length")
+	}
+	// Disallow parent traversal and backslashes
+	if strings.Contains(loc, "..") || strings.Contains(loc, "\\") {
+		return "", fmt.Errorf("invalid location characters")
+	}
+	// Only allow a conservative charset
+	for _, r := range loc {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '/' || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return "", fmt.Errorf("invalid character in location")
+	}
+	// Trim leading slash to keep it relative to prefix
+	loc = strings.TrimLeft(loc, "/")
+	return loc, nil
 }
 
 // ProcessImageUploadFromPath processes image upload parameters from path
@@ -246,11 +285,25 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 		return false, fiber.StatusBadRequest, fmt.Errorf("failed to decode URL: %w", err), nil
 	}
 
-	if params.Signature != "" {
+	// If custom location is requested, require signature and validate URL|location
+	customObjectKey := ""
+	if params.Location != "" {
+		if config.HmacKey == "" || params.Signature == "" {
+			return false, fiber.StatusForbidden, fmt.Errorf("signature required for custom location"), nil
+		}
+		sanitized, serr := sanitizeLocation(params.Location)
+		if serr != nil {
+			return false, fiber.StatusBadRequest, serr, nil
+		}
+		signedMsg := urlParam + "|" + sanitized
+		if !compareHmacForMessage(signedMsg, params.Signature, config.HmacKey) {
+			return false, fiber.StatusForbidden, fmt.Errorf("invalid signature for location"), nil
+		}
+		customObjectKey = sanitized
+	} else if params.Signature != "" { // normal signature over URL only
 		if config.HmacKey == "" {
 			return false, fiber.StatusForbidden, fmt.Errorf("hmac key is not set"), nil
 		}
-
 		if !compareHmac(urlParam, params.Signature, config.HmacKey) {
 			return false, fiber.StatusForbidden, fmt.Errorf("invalid signature"), nil
 		}
@@ -279,15 +332,16 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 	}
 
 	return true, fiber.StatusOK, nil, &ImageContext{
-		Url:           urlParam,
-		Quality:       params.Quality,
-		Width:         params.Width,
-		Height:        params.Height,
-		Scale:         params.Scale,
-		Interpolation: params.Interpolation,
-		Webp:          params.Webp,
-		FramePosition: params.FramePosition,
-		Hostname:      hostname,
+		Url:             urlParam,
+		Quality:         params.Quality,
+		Width:           params.Width,
+		Height:          params.Height,
+		Scale:           params.Scale,
+		Interpolation:   params.Interpolation,
+		Webp:            params.Webp,
+		FramePosition:   params.FramePosition,
+		Hostname:        hostname,
+		CustomObjectKey: customObjectKey,
 	}
 }
 
@@ -298,11 +352,25 @@ func ProcessImageContext(logger *zap.Logger, c *fiber.Ctx, config *config.Config
 	}
 
 	signature := c.Query("signature")
-	if signature != "" {
+	location := c.Query("location")
+	customObjectKey := ""
+	if location != "" {
+		if config.HmacKey == "" || signature == "" {
+			return false, fiber.StatusForbidden, fmt.Errorf("signature required for custom location"), nil
+		}
+		sanitized, serr := sanitizeLocation(location)
+		if serr != nil {
+			return false, fiber.StatusBadRequest, serr, nil
+		}
+		signedMsg := urlParam + "|" + sanitized
+		if !compareHmacForMessage(signedMsg, signature, config.HmacKey) {
+			return false, fiber.StatusForbidden, fmt.Errorf("invalid signature for location"), nil
+		}
+		customObjectKey = sanitized
+	} else if signature != "" {
 		if config.HmacKey == "" {
 			return false, fiber.StatusForbidden, fmt.Errorf("hmac key is not set"), nil
 		}
-
 		if !compareHmac(urlParam, signature, config.HmacKey) {
 			return false, fiber.StatusForbidden, fmt.Errorf("invalid signature"), nil
 		}
@@ -347,7 +415,8 @@ func ProcessImageContext(logger *zap.Logger, c *fiber.Ctx, config *config.Config
 		Webp:          webp,
 		FramePosition: framePosition,
 
-		Hostname: hostname,
+		Hostname:        hostname,
+		CustomObjectKey: customObjectKey,
 	}
 }
 

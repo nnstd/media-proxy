@@ -3,6 +3,7 @@ package routes
 import (
 	"fmt"
 	"mime"
+    "context"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -20,16 +21,16 @@ import (
 )
 
 // RegisterVideoRoutes sets up video processing routes
-func RegisterVideoRoutes(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, app *fiber.App, counters *metrics.Metrics) {
+func RegisterVideoRoutes(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, app *fiber.App, counters *metrics.Metrics, s3cache *S3Cache) {
 	// New path-based route: /videos/preview/q:50/w:500/h:300/webp/{base64-encoded-url}
-	app.Get("/videos/preview/*", handleVideoPreviewRequest(logger, cache, config, counters))
+    app.Get("/videos/preview/*", handleVideoPreviewRequest(logger, cache, config, counters, s3cache))
 
 	// Legacy query-based route for backward compatibility
-	app.Get("/video/preview", handleVideoPreviewRequestLegacy(logger, cache, config, counters))
+    app.Get("/video/preview", handleVideoPreviewRequestLegacy(logger, cache, config, counters, s3cache))
 }
 
 // handleVideoPreviewRequest processes video preview requests with path parameters
-func handleVideoPreviewRequest(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics) fiber.Handler {
+func handleVideoPreviewRequest(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, s3cache *S3Cache) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		pathParams := c.Params("*")
 		logger.Info("video preview request received", zap.String("pathParams", pathParams))
@@ -39,12 +40,12 @@ func handleVideoPreviewRequest(logger *zap.Logger, cache *ristretto.Cache[string
 			return c.Status(status).SendString(err.Error())
 		}
 
-		return processVideoPreview(c, logger, cache, config, counters, params)
+        return processVideoPreview(c, logger, cache, config, counters, params, s3cache)
 	}
 }
 
 // handleVideoPreviewRequestLegacy handles legacy query-based video preview requests
-func handleVideoPreviewRequestLegacy(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics) fiber.Handler {
+func handleVideoPreviewRequestLegacy(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, s3cache *S3Cache) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		logger.Info("video preview request received", zap.String("url", c.Query("url")))
 
@@ -53,12 +54,12 @@ func handleVideoPreviewRequestLegacy(logger *zap.Logger, cache *ristretto.Cache[
 			return c.Status(status).SendString(err.Error())
 		}
 
-		return processVideoPreview(c, logger, cache, config, counters, params)
+        return processVideoPreview(c, logger, cache, config, counters, params, s3cache)
 	}
 }
 
 // processVideoPreview handles the common video preview processing logic
-func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, params *validation.ImageContext) error {
+func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, params *validation.ImageContext, s3cache *S3Cache) error {
 	cacheKey := cacheKey(params.Url, params)
 	cacheValue, ok := cache.Get(cacheKey)
 	if ok {
@@ -68,6 +69,25 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 		c.Set("Content-Type", cacheValue.ContentType)
 		return c.Send(cacheValue.Body)
 	}
+
+    // Try S3 cache if enabled
+    if s3cache != nil && s3cache.Enabled {
+        if params.CustomObjectKey != "" {
+            if s3val, err := s3cache.GetAtLocation(context.Background(), params.CustomObjectKey); err == nil && s3val != nil {
+                counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+                counters.ServedCached.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+                c.Set("Content-Type", s3val.ContentType)
+                return c.Send(s3val.Body)
+            }
+        }
+        if s3val, err := s3cache.Get(context.Background(), cacheKey); err == nil && s3val != nil {
+            counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+            counters.ServedCached.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+            c.Set("Content-Type", s3val.ContentType)
+            cache.SetWithTTL(cacheKey, *s3val, 1000, time.Duration(config.CacheTTL)*time.Second)
+            return c.Send(s3val.Body)
+        }
+    }
 
 	// First check if it's a video by doing a HEAD request
 	responseContentType, err := validation.GetContentType(params.Url)
@@ -126,10 +146,17 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 			return c.Status(fiber.StatusInternalServerError).SendString("failed to encode webp")
 		}
 
-		cache.SetWithTTL(cacheKey, CacheValue{
-			Body:        buf.Bytes(),
-			ContentType: "image/webp",
-		}, 1000, time.Duration(config.CacheTTL)*time.Second)
+        value := CacheValue{Body: buf.Bytes(), ContentType: "image/webp"}
+        cache.SetWithTTL(cacheKey, value, 1000, time.Duration(config.CacheTTL)*time.Second)
+        if s3cache != nil && s3cache.Enabled {
+            data := make([]byte, len(value.Body))
+            copy(data, value.Body)
+            if params.CustomObjectKey != "" {
+                go func() { _ = s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, data, value.ContentType) }()
+            } else {
+                go func() { _ = s3cache.Put(context.Background(), cacheKey, data, value.ContentType) }()
+            }
+        }
 
 		c.Set("Content-Type", "image/webp")
 		c.Set("Cache-Control", fmt.Sprintf("public, max-age=%d", config.HTTPCacheTTL))
@@ -150,10 +177,17 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to encode jpeg")
 	}
 
-	cache.SetWithTTL(cacheKey, CacheValue{
-		Body:        buf.Bytes(),
-		ContentType: "image/jpeg",
-	}, 1000, time.Duration(config.CacheTTL)*time.Second)
+    value := CacheValue{Body: buf.Bytes(), ContentType: "image/jpeg"}
+    cache.SetWithTTL(cacheKey, value, 1000, time.Duration(config.CacheTTL)*time.Second)
+    if s3cache != nil && s3cache.Enabled {
+        data := make([]byte, len(value.Body))
+        copy(data, value.Body)
+        if params.CustomObjectKey != "" {
+            go func() { _ = s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, data, value.ContentType) }()
+        } else {
+            go func() { _ = s3cache.Put(context.Background(), cacheKey, data, value.ContentType) }()
+        }
+    }
 
 	c.Set("Content-Type", "image/jpeg")
 	c.Set("Cache-Control", fmt.Sprintf("public, max-age=%d", config.HTTPCacheTTL))

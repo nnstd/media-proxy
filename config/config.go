@@ -25,4 +25,13 @@ type Config struct {
 	MaxImageSize     int `json:"maxImageSizeMB" env:"APP_MAX_IMAGE_SIZE_MB"`
 	MaxVideoSize     int `json:"maxVideoSizeMB" env:"APP_MAX_VIDEO_SIZE_MB"`
 	URLCacheSize     int `json:"urlCacheSize" env:"APP_URL_CACHE_SIZE"`
+
+	// Optional S3 storage for persistent result caching
+	S3Enabled         bool   `json:"s3Enabled" env:"S3_ENABLED"`
+	S3Endpoint        string `json:"s3Endpoint" env:"S3_ENDPOINT"`
+	S3AccessKeyID     string `json:"s3AccessKeyId" env:"S3_ACCESS_KEY_ID"`
+	S3SecretAccessKey string `json:"s3SecretAccessKey" env:"S3_SECRET_ACCESS_KEY"`
+	S3Bucket          string `json:"s3Bucket" env:"S3_BUCKET"`
+	S3SSL             bool   `json:"s3SSL" env:"S3_SSL"`
+	S3Prefix          string `json:"s3Prefix" env:"S3_PREFIX"`
 }

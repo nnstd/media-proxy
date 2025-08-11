@@ -70,6 +70,20 @@ func main() {
 		logger.Fatal(err.Error())
 	}
 
+	// Initialize optional S3 cache
+	s3cache, s3err := routes.NewS3Cache(
+		config.S3Enabled,
+		config.S3Endpoint,
+		config.S3AccessKeyID,
+		config.S3SecretAccessKey,
+		config.S3Bucket,
+		config.S3SSL,
+		config.S3Prefix,
+	)
+	if s3err != nil {
+		logger.Warn("failed to initialize S3 cache", zap.Error(s3err))
+	}
+
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
 		Prefork:               config.Prefork,
@@ -88,8 +102,8 @@ func main() {
 	app.Use(healthcheck.New())
 	app.Use(compress.New())
 
-	routes.RegisterImageRoutes(logger, cache, &config, app, metrics)
-	routes.RegisterVideoRoutes(logger, cache, &config, app, metrics)
+	routes.RegisterImageRoutes(logger, cache, &config, app, metrics, s3cache)
+	routes.RegisterVideoRoutes(logger, cache, &config, app, metrics, s3cache)
 
 	address := config.Address
 	if address == "" {
