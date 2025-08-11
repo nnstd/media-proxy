@@ -143,6 +143,15 @@ func DecodeURL(encodedURL string) (string, error) {
 	return string(decoded), nil
 }
 
+// DecodeBase64URL decodes a base64 URL-safe encoded string (keeps compatibility with URL-safe alphabet)
+func DecodeBase64URL(encoded string) (string, error) {
+	decoded, err := base64.URLEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode base64: %w", err)
+	}
+	return string(decoded), nil
+}
+
 func compareHmac(url, providedSignature, secret string) bool {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(url))
@@ -291,7 +300,12 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 		if config.HmacKey == "" || params.Signature == "" {
 			return false, fiber.StatusForbidden, fmt.Errorf("signature required for custom location"), nil
 		}
-		sanitized, serr := sanitizeLocation(params.Location)
+		// Expect location to be base64 URL-safe encoded
+		decodedLocation, derr := DecodeBase64URL(params.Location)
+		if derr != nil {
+			return false, fiber.StatusBadRequest, derr, nil
+		}
+		sanitized, serr := sanitizeLocation(decodedLocation)
 		if serr != nil {
 			return false, fiber.StatusBadRequest, serr, nil
 		}
@@ -358,7 +372,12 @@ func ProcessImageContext(logger *zap.Logger, c *fiber.Ctx, config *config.Config
 		if config.HmacKey == "" || signature == "" {
 			return false, fiber.StatusForbidden, fmt.Errorf("signature required for custom location"), nil
 		}
-		sanitized, serr := sanitizeLocation(location)
+		// Expect location to be base64 URL-safe encoded
+		decodedLocation, derr := DecodeBase64URL(location)
+		if derr != nil {
+			return false, fiber.StatusBadRequest, derr, nil
+		}
+		sanitized, serr := sanitizeLocation(decodedLocation)
 		if serr != nil {
 			return false, fiber.StatusBadRequest, serr, nil
 		}

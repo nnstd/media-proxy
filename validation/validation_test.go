@@ -75,13 +75,14 @@ func TestProcessImageContextFromPath_URLAndLocationSignature_Valid(t *testing.T)
     }
 
     url := "https://example.com/media/cat.jpg"
-    // Note: path-style parser splits by '/', so use a location without slashes here
+    // Note: location must be base64 URL-safe encoded in path-style
     location := "uploads-2025-08-cat.jpg" // must pass sanitizeLocation
     msg := url + "|" + location
     sig := hexHMAC(msg, secret)
 
     encoded := base64.URLEncoding.EncodeToString([]byte(url))
-    pathParams := "loc:" + location + "/sig:" + sig + "/" + encoded
+    encodedLocation := base64.URLEncoding.EncodeToString([]byte(location))
+    pathParams := "loc:" + encodedLocation + "/sig:" + sig + "/" + encoded
 
     ok, status, err, ctx := ProcessImageContextFromPath(logger, pathParams, cfg)
     if !ok || status != http.StatusOK || err != nil {
@@ -102,7 +103,8 @@ func TestProcessImageContextFromPath_LocationMissingSignature(t *testing.T) {
 
     url := "https://example.com/media/cat.jpg"
     encoded := base64.URLEncoding.EncodeToString([]byte(url))
-    pathParams := "loc:uploads/2025/08/cat.jpg/" + encoded
+    encLoc := base64.URLEncoding.EncodeToString([]byte("uploads/2025/08/cat.jpg"))
+    pathParams := "loc:" + encLoc + "/" + encoded
 
     ok, status, err, _ := ProcessImageContextFromPath(logger, pathParams, cfg)
     if ok || status != http.StatusForbidden || err == nil {
@@ -179,7 +181,8 @@ func TestProcessImageContext_QueryFlow_URLAndLocationSignature_Valid(t *testing.
     location := "uploads/2025/08/cat.jpg"
     msg := url + "|" + location
     sig := hexHMAC(msg, secret)
-    req, _ := http.NewRequest(http.MethodGet, "/images?url="+url+"&location="+location+"&signature="+sig, nil)
+    encodedLocation := base64.URLEncoding.EncodeToString([]byte(location))
+    req, _ := http.NewRequest(http.MethodGet, "/images?url="+url+"&location="+encodedLocation+"&signature="+sig, nil)
     resp, err := app.Test(req)
     if err != nil {
         t.Fatalf("app.Test error: %v", err)
