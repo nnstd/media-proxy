@@ -75,7 +75,8 @@ func TestProcessImageContextFromPath_URLAndLocationSignature_Valid(t *testing.T)
     }
 
     url := "https://example.com/media/cat.jpg"
-    location := "uploads/2025/08/cat.jpg" // must pass sanitizeLocation
+    // Note: path-style parser splits by '/', so use a location without slashes here
+    location := "uploads-2025-08-cat.jpg" // must pass sanitizeLocation
     msg := url + "|" + location
     sig := hexHMAC(msg, secret)
 
