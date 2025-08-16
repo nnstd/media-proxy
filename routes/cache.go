@@ -6,10 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"media-proxy/validation"
 	"strconv"
 	"strings"
-
-	"media-proxy/validation"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -90,13 +90,13 @@ func objectKeyFromCacheKey(prefix, cacheKey string) string {
 
 // objectKeyFromExplicitLocation joins a configured prefix with a sanitized, explicit location
 func objectKeyFromExplicitLocation(prefix, location string) string {
-    if prefix == "" {
-        return location
-    }
-    if strings.HasSuffix(prefix, "/") {
-        return prefix + location
-    }
-    return prefix + "/" + location
+	if prefix == "" {
+		return location
+	}
+	if strings.HasSuffix(prefix, "/") {
+		return prefix + location
+	}
+	return prefix + "/" + location
 }
 
 // Get tries to fetch an object from S3 by cache key. Returns nil if missing or disabled.
@@ -133,28 +133,28 @@ func (s *S3Cache) Get(ctx context.Context, cacheKey string) (*CacheValue, error)
 
 // GetAtLocation fetches an object from S3 by explicit object key (location)
 func (s *S3Cache) GetAtLocation(ctx context.Context, location string) (*CacheValue, error) {
-    if s == nil || !s.Enabled || s.Client == nil {
-        return nil, nil
-    }
-    objKey := objectKeyFromExplicitLocation(s.Prefix, location)
-    obj, err := s.Client.GetObject(ctx, s.Bucket, objKey, minio.GetObjectOptions{})
-    if err != nil {
-        return nil, nil
-    }
-    data, rerr := io.ReadAll(obj)
-    if rerr != nil {
-        return nil, nil
-    }
-    info, herr := obj.Stat()
-    contentType := "application/octet-stream"
-    if herr == nil {
-        if ct, ok := info.Metadata["Content-Type"]; ok && len(ct) > 0 {
-            contentType = ct[0]
-        } else if info.ContentType != "" {
-            contentType = info.ContentType
-        }
-    }
-    return &CacheValue{Body: data, ContentType: contentType}, nil
+	if s == nil || !s.Enabled || s.Client == nil {
+		return nil, nil
+	}
+	objKey := objectKeyFromExplicitLocation(s.Prefix, location)
+	obj, err := s.Client.GetObject(ctx, s.Bucket, objKey, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, nil
+	}
+	data, rerr := io.ReadAll(obj)
+	if rerr != nil {
+		return nil, nil
+	}
+	info, herr := obj.Stat()
+	contentType := "application/octet-stream"
+	if herr == nil {
+		if ct, ok := info.Metadata["Content-Type"]; ok && len(ct) > 0 {
+			contentType = ct[0]
+		} else if info.ContentType != "" {
+			contentType = info.ContentType
+		}
+	}
+	return &CacheValue{Body: data, ContentType: contentType}, nil
 }
 
 // Put uploads object to S3 by cache key with content type. Best-effort, errors are returned but non-fatal to caller.
@@ -165,17 +165,23 @@ func (s *S3Cache) Put(ctx context.Context, cacheKey string, body []byte, content
 
 	objKey := objectKeyFromCacheKey(s.Prefix, cacheKey)
 	reader := bytes.NewReader(body)
-	_, err := s.Client.PutObject(ctx, s.Bucket, objKey, reader, int64(len(body)), minio.PutObjectOptions{ContentType: contentType})
+	_, err := s.Client.PutObject(ctx, s.Bucket, objKey, reader, int64(len(body)), minio.PutObjectOptions{
+		ContentType: contentType,
+		Expires:     time.Now().Add(time.Hour * 24),
+	})
 	return err
 }
 
 // PutAtLocation uploads object to S3 by explicit location key
 func (s *S3Cache) PutAtLocation(ctx context.Context, location string, body []byte, contentType string) error {
-    if s == nil || !s.Enabled || s.Client == nil {
-        return nil
-    }
-    objKey := objectKeyFromExplicitLocation(s.Prefix, location)
-    reader := bytes.NewReader(body)
-    _, err := s.Client.PutObject(ctx, s.Bucket, objKey, reader, int64(len(body)), minio.PutObjectOptions{ContentType: contentType})
-    return err
+	if s == nil || !s.Enabled || s.Client == nil {
+		return nil
+	}
+	objKey := objectKeyFromExplicitLocation(s.Prefix, location)
+	reader := bytes.NewReader(body)
+	_, err := s.Client.PutObject(ctx, s.Bucket, objKey, reader, int64(len(body)), minio.PutObjectOptions{
+		ContentType: contentType,
+		Expires:     time.Now().Add(time.Hour * 24),
+	})
+	return err
 }
