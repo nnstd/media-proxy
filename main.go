@@ -2,9 +2,13 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"github.com/gofiber/fiber/v2/middleware/compress"
+	"github.com/gofiber/fiber/v2/middleware/etag"
 	"github.com/gofiber/fiber/v2/middleware/healthcheck"
+	"github.com/gofiber/fiber/v2/middleware/cache"
+
 	"go.uber.org/zap"
 
 	"github.com/caarlos0/env/v11"
@@ -65,7 +69,7 @@ func main() {
 		config.CacheTTL = 1800 // 30 minutes
 	}
 
-	cache, err := ristretto.NewCache(cacheConfig)
+	cacheStore, err := ristretto.NewCache(cacheConfig)
 	if err != nil {
 		logger.Fatal(err.Error())
 	}
@@ -101,9 +105,13 @@ func main() {
 
 	app.Use(healthcheck.New())
 	app.Use(compress.New())
+	app.Use(etag.New())
+	app.Use(cache.New(cache.Config{
+		Expiration: time.Minute * 10,
+	}))
 
-	routes.RegisterImageRoutes(logger, cache, &config, app, metrics, s3cache)
-	routes.RegisterVideoRoutes(logger, cache, &config, app, metrics, s3cache)
+	routes.RegisterImageRoutes(logger, cacheStore, &config, app, metrics, s3cache)
+	routes.RegisterVideoRoutes(logger, cacheStore, &config, app, metrics, s3cache)
 
 	address := config.Address
 	if address == "" {
