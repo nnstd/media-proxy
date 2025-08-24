@@ -131,6 +131,10 @@ func ParsePathParams(pathParams string) (*PathParams, error) {
 		}
 	}
 
+	// Add debug logging for parsed parameters
+	fmt.Printf("DEBUG: Parsed path params - Quality: %d, Width: %d, Height: %d, Scale: %f, Webp: %t, FramePosition: %s\n",
+		params.Quality, params.Width, params.Height, params.Scale, params.Webp, params.FramePosition)
+
 	return params, nil
 }
 

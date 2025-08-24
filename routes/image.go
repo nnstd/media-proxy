@@ -36,6 +36,10 @@ func RegisterImageRoutes(logger *zap.Logger, cache *ristretto.Cache[string, Cach
 	app.Post("/images", handleImageUploadLegacy(logger, cache, config, counters, s3cache))
 }
 
+//#region handleImageRequest
+
+//#region handleImageRequest
+
 // handleImageRequest processes image requests with path parameters
 func handleImageRequest(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, s3cache *S3Cache) fiber.Handler {
 	return func(c *fiber.Ctx) error {
@@ -65,6 +69,10 @@ func handleImageRequestLegacy(logger *zap.Logger, cache *ristretto.Cache[string,
 	}
 }
 
+//#endregion
+
+//#region processImageResponse
+
 // processImageResponse handles the common image processing logic
 func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, params *validation.ImageContext, s3cache *S3Cache) error {
 	cacheKey := cacheKey(params.Url, params)
@@ -77,17 +85,17 @@ func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cac
 		return c.Send(cacheValue.Body)
 	}
 
-    // Try S3 cache if enabled
-    if s3cache != nil && s3cache.Enabled {
-        if params.CustomObjectKey != "" {
-            if s3val, err := s3cache.GetAtLocation(context.Background(), params.CustomObjectKey); err == nil && s3val != nil {
-                counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
-                counters.ServedCached.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
-                c.Set("Content-Type", s3val.ContentType)
-                return c.Send(s3val.Body)
-            }
-        }
-        if s3val, err := s3cache.Get(context.Background(), cacheKey); err == nil && s3val != nil {
+	// Try S3 cache if enabled
+	if s3cache != nil && s3cache.Enabled {
+		if params.CustomObjectKey != "" {
+			if s3val, err := s3cache.GetAtLocation(context.Background(), params.CustomObjectKey); err == nil && s3val != nil {
+				counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+				counters.ServedCached.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+				c.Set("Content-Type", s3val.ContentType)
+				return c.Send(s3val.Body)
+			}
+		}
+		if s3val, err := s3cache.Get(context.Background(), cacheKey); err == nil && s3val != nil {
 			counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 			counters.ServedCached.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 			c.Set("Content-Type", s3val.ContentType)
@@ -129,6 +137,10 @@ func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cac
 	return processImageData(c, logger, cache, config, counters, params, responseBody, parsedContentType, s3cache)
 }
 
+//#endregion
+
+//#region processImageData
+
 // processImageData handles the actual image processing and encoding
 func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, params *validation.ImageContext, imageData []byte, contentType string, s3cache *S3Cache) error {
 	cacheKey := cacheKey(params.Url, params)
@@ -142,18 +154,20 @@ func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[s
 			Body:        imageData,
 			ContentType: contentType,
 		}
-        cache.SetWithTTL(cacheKey, value, 1000, time.Duration(config.CacheTTL)*time.Second)
-        // store in S3 asynchronously
-        if s3cache != nil && s3cache.Enabled {
-            if params.CustomObjectKey != "" {
-                // store at explicit location
-                go func() { _ = s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, value.Body, value.ContentType) }()
-            } else {
-                go func() { _ = s3cache.Put(context.Background(), cacheKey, value.Body, value.ContentType) }()
-            }
-        }
+		cache.SetWithTTL(cacheKey, value, 1000, time.Duration(config.CacheTTL)*time.Second)
+		// store in S3 asynchronously
+		if s3cache != nil && s3cache.Enabled {
+			if params.CustomObjectKey != "" {
+				// store at explicit location
+				go func() {
+					_ = s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, value.Body, value.ContentType)
+				}()
+			} else {
+				go func() { _ = s3cache.Put(context.Background(), cacheKey, value.Body, value.ContentType) }()
+			}
+		}
 
-		logger.Info("unmodified image served successfully", zap.String("content-type", contentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
+		logger.Debug("unmodified image served successfully", zap.String("content-type", contentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
 		counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 		return c.Send(imageData)
 	}
@@ -197,15 +211,17 @@ func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[s
 
 		value := CacheValue{Body: buf.Bytes(), ContentType: "image/webp"}
 		cache.SetWithTTL(cacheKey, value, 1000, time.Duration(config.CacheTTL)*time.Second)
-        if s3cache != nil && s3cache.Enabled {
-            data := make([]byte, len(value.Body))
-            copy(data, value.Body)
-            if params.CustomObjectKey != "" {
-                go func() { _ = s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, data, value.ContentType) }()
-            } else {
-                go func() { _ = s3cache.Put(context.Background(), cacheKey, data, value.ContentType) }()
-            }
-        }
+		if s3cache != nil && s3cache.Enabled {
+			data := make([]byte, len(value.Body))
+			copy(data, value.Body)
+			if params.CustomObjectKey != "" {
+				go func() {
+					_ = s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, data, value.ContentType)
+				}()
+			} else {
+				go func() { _ = s3cache.Put(context.Background(), cacheKey, data, value.ContentType) }()
+			}
+		}
 
 		logger.Info("image served successfully", zap.String("content-type", "image/webp"), zap.String("origin", params.Hostname), zap.String("url", params.Url))
 
@@ -221,15 +237,17 @@ func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[s
 		// TODO: Implement quality adjustment for other formats
 		value := CacheValue{Body: imageData, ContentType: contentType}
 		cache.SetWithTTL(cacheKey, value, 1000, time.Duration(config.CacheTTL)*time.Second)
-        if s3cache != nil && s3cache.Enabled {
-            data := make([]byte, len(value.Body))
-            copy(data, value.Body)
-            if params.CustomObjectKey != "" {
-                go func() { _ = s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, data, value.ContentType) }()
-            } else {
-                go func() { _ = s3cache.Put(context.Background(), cacheKey, data, value.ContentType) }()
-            }
-        }
+		if s3cache != nil && s3cache.Enabled {
+			data := make([]byte, len(value.Body))
+			copy(data, value.Body)
+			if params.CustomObjectKey != "" {
+				go func() {
+					_ = s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, data, value.ContentType)
+				}()
+			} else {
+				go func() { _ = s3cache.Put(context.Background(), cacheKey, data, value.ContentType) }()
+			}
+		}
 
 		logger.Info("image served successfully", zap.String("content-type", contentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
 
@@ -238,6 +256,10 @@ func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[s
 		return c.Send(imageData)
 	}
 }
+
+//#endregion
+
+//#region handleImageUpload
 
 // handleImageUpload processes image upload requests with path parameters
 func handleImageUpload(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, s3cache *S3Cache) fiber.Handler {
@@ -284,6 +306,10 @@ func handleImageUpload(logger *zap.Logger, cache *ristretto.Cache[string, CacheV
 	}
 }
 
+//#endregion
+
+//#region handleImageUploadLegacy
+
 // handleImageUploadLegacy handles legacy query-based image upload requests
 func handleImageUploadLegacy(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, s3cache *S3Cache) fiber.Handler {
 	return func(c *fiber.Ctx) error {
@@ -327,3 +353,5 @@ func handleImageUploadLegacy(logger *zap.Logger, cache *ristretto.Cache[string, 
 		return processImageData(c, logger, cache, config, counters, params, requestBody, parsedContentType, s3cache)
 	}
 }
+
+//#endregion
