@@ -7,5 +7,5 @@ import "C"
 type Level int
 
 const (
-	LevelUnknown = Level(C.FF_LEVEL_UNKNOWN)
+// LevelUnknown = Level(C.FF_LEVEL_UNKNOWN)
 )

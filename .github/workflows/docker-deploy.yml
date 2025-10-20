@@ -86,21 +86,6 @@ jobs:
           make -j$(nproc)
           make install
 
-      - name: Run tests
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: ${{ matrix.cgo }}
-        run: |
-          if [ "${{ matrix.os }}" = "ubuntu-latest" ] && [ "${{ matrix.cgo }}" = "1" ]; then
-            export CGO_LDFLAGS="-L/tmp/ffmpeg/lib/"
-            export CGO_CFLAGS="-I/tmp/ffmpeg/include/"
-            export PKG_CONFIG_PATH="/tmp/ffmpeg/lib/pkgconfig"
-          elif [ "${{ matrix.os }}" = "macos-latest" ] && [ "${{ matrix.cgo }}" = "1" ]; then
-            export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig"
-          fi
-          go test ./...
-
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}

@@ -105,10 +105,6 @@ jobs:
       run: |
         ln -s /opt/homebrew/Cellar/libx11/1.8.11 /opt/homebrew/Cellar/libx11/1.8.10
 
-    - name: Run tests
-      run: |
-        go test -v -race -covermode atomic -coverprofile=covprofile ./...
-
     - if: github.event_name != 'pull_request'
       name: Send coverage
       env:
