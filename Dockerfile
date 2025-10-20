@@ -47,7 +47,6 @@ ENV CGO_CFLAGS="-I/app/tmp/n7.0/include/"
 ENV PKG_CONFIG_PATH="/app/tmp/n7.0/lib/pkgconfig"
 
 COPY go.mod go.sum ./
-COPY go-astiav ./go-astiav
 RUN go mod download
 
 COPY . .
