@@ -20,8 +20,16 @@ func extractFrameFromPosition(urlStr string, position string) (image.Image, erro
 	}
 	defer inputFormatContext.Free()
 
+	// Create dictionary for format options to improve MOV file handling
+	formatOptions := astiav.NewDictionary()
+	defer formatOptions.Free()
+
+	// Increase analyzeduration and probesize for better codec detection (especially for MOV files)
+	formatOptions.Set("analyzeduration", "100000000", 0) // 100 seconds in microseconds
+	formatOptions.Set("probesize", "50000000", 0)        // 50MB
+
 	// Open input
-	if err := inputFormatContext.OpenInput(urlStr, nil, nil); err != nil {
+	if err := inputFormatContext.OpenInput(urlStr, nil, formatOptions); err != nil {
 		return nil, fmt.Errorf("failed to open input: %w", err)
 	}
 	defer inputFormatContext.CloseInput()
