@@ -18,31 +18,11 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# Set FFmpeg version to match go-astiav requirements (n7.0)
-ENV FFMPEG_VERSION=n7.0
+# Copy Makefile and source
+COPY Makefile .
 
-# Build FFmpeg from source following go-astiav Makefile approach
-RUN mkdir -p tmp && \
-    cd tmp && \
-    wget https://github.com/FFmpeg/FFmpeg/archive/refs/tags/${FFMPEG_VERSION}.tar.gz && \
-    tar -xzf ${FFMPEG_VERSION}.tar.gz && \
-    cd FFmpeg-${FFMPEG_VERSION} && \
-    ./configure \
-        --prefix=/app/tmp/${FFMPEG_VERSION} \
-        --enable-shared \
-        --disable-static \
-        --disable-autodetect \
-        --disable-programs \
-        --disable-doc \
-        --disable-postproc \
-        --disable-pixelutils \
-        --disable-hwaccels \
-        --disable-ffprobe \
-        --disable-ffplay \
-        --enable-openssl \
-        --enable-protocol=file,http,hls && \
-    make -j$(nproc) && \
-    make install
+# Build FFmpeg from source (n7.0 to match go-astiav requirements)
+RUN make install-ffmpeg version=n7.0
 
 # Set environment variables for Go build to match FFmpeg version
 ENV CGO_LDFLAGS="-L/app/tmp/n7.0/lib/"
@@ -53,7 +33,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 go build -tags=musl -ldflags "-s -w" -o server .
+RUN CGO_ENABLED=1 go build -ldflags "-s -w" -o server .
 
 FROM alpine:latest
 

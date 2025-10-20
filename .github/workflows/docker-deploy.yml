@@ -64,28 +64,14 @@ jobs:
       - name: Build FFmpeg from source (Linux)
         if: matrix.os == 'ubuntu-latest' && matrix.cgo == '1'
         run: |
-          mkdir -p tmp
-          cd tmp
-          # Use GitHub releases for FFmpeg n7.0 (matches go-astiav requirements)
-          wget https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n7.0.tar.gz
-          tar -xzf n7.0.tar.gz
-          cd FFmpeg-n7.0
-          ./configure \
-            --prefix=/tmp/ffmpeg \
-            --enable-shared \
-            --disable-static \
-            --disable-autodetect \
-            --disable-programs \
-            --disable-doc \
-            --disable-postproc \
-            --disable-pixelutils \
-            --disable-hwaccels \
-            --disable-ffprobe \
-            --disable-ffplay \
-            --enable-openssl \
-            --enable-protocol=file,http,hls
-          make -j$(nproc)
-          make install
+          # Install make if not available
+          sudo apt-get install -y make
+          # Use Makefile to build FFmpeg n7.0 (matches go-astiav requirements)
+          make install-ffmpeg version=n7.0
+          # Set environment for Go build
+          echo "CGO_LDFLAGS=-L$(pwd)/tmp/n7.0/lib/" >> $GITHUB_ENV
+          echo "CGO_CFLAGS=-I$(pwd)/tmp/n7.0/include/" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$(pwd)/tmp/n7.0/lib/pkgconfig" >> $GITHUB_ENV
 
       - name: Build binary
         env:
@@ -95,9 +81,9 @@ jobs:
         run: |
           # Set build environment based on OS and CGO
           if [ "${{ matrix.os }}" = "ubuntu-latest" ] && [ "${{ matrix.cgo }}" = "1" ]; then
-            export CGO_LDFLAGS="-L/tmp/ffmpeg/lib/"
-            export CGO_CFLAGS="-I/tmp/ffmpeg/include/"
-            export PKG_CONFIG_PATH="/tmp/ffmpeg/lib/pkgconfig"
+            export CGO_LDFLAGS="-L$(pwd)/tmp/n7.0/lib/"
+            export CGO_CFLAGS="-I$(pwd)/tmp/n7.0/include/"
+            export PKG_CONFIG_PATH="$(pwd)/tmp/n7.0/lib/pkgconfig"
           elif [ "${{ matrix.os }}" = "macos-latest" ] && [ "${{ matrix.cgo }}" = "1" ]; then
             export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig"
           fi
