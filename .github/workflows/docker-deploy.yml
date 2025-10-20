@@ -66,9 +66,10 @@ jobs:
         run: |
           mkdir -p tmp
           cd tmp
-          wget https://ffmpeg.org/releases/ffmpeg-7.0.tar.xz
-          tar -xf ffmpeg-7.0.tar.xz
-          cd ffmpeg-7.0
+          # Use GitHub releases for FFmpeg n7.0 (matches go-astiav requirements)
+          wget https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n7.0.tar.gz
+          tar -xzf n7.0.tar.gz
+          cd FFmpeg-n7.0
           ./configure \
             --prefix=/tmp/ffmpeg \
             --enable-shared \

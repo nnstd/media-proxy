@@ -18,14 +18,17 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
+# Set FFmpeg version to match go-astiav requirements (n7.0)
+ENV FFMPEG_VERSION=n7.0
+
 # Build FFmpeg from source following go-astiav Makefile approach
 RUN mkdir -p tmp && \
     cd tmp && \
-    wget https://ffmpeg.org/releases/ffmpeg-7.0.tar.xz && \
-    tar -xf ffmpeg-7.0.tar.xz && \
-    cd ffmpeg-7.0 && \
+    wget https://github.com/FFmpeg/FFmpeg/archive/refs/tags/${FFMPEG_VERSION}.tar.gz && \
+    tar -xzf ${FFMPEG_VERSION}.tar.gz && \
+    cd FFmpeg-${FFMPEG_VERSION} && \
     ./configure \
-        --prefix=/app/tmp/n7.0 \
+        --prefix=/app/tmp/${FFMPEG_VERSION} \
         --enable-shared \
         --disable-static \
         --disable-autodetect \
@@ -41,7 +44,7 @@ RUN mkdir -p tmp && \
     make -j$(nproc) && \
     make install
 
-# Set environment variables for Go build
+# Set environment variables for Go build to match FFmpeg version
 ENV CGO_LDFLAGS="-L/app/tmp/n7.0/lib/"
 ENV CGO_CFLAGS="-I/app/tmp/n7.0/include/"
 ENV PKG_CONFIG_PATH="/app/tmp/n7.0/lib/pkgconfig"
@@ -66,10 +69,9 @@ WORKDIR /app
 
 # Copy FFmpeg libraries from builder
 COPY --from=builder /app/tmp/n7.0/lib/*.so* /usr/local/lib/
-RUN ldconfig /usr/local/lib
+RUN ldconfig /usr/local/lib || true
 
 COPY --from=builder /app/server .
-
 EXPOSE 3000
 
 CMD ["sh", "-c", "/app/server"]
