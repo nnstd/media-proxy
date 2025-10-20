@@ -2,6 +2,8 @@ module media-proxy
 
 go 1.24
 
+replace github.com/asticode/go-astiav => ./go-astiav
+
 require (
 	github.com/IGLOU-EU/go-wildcard/v2 v2.1.0
 	github.com/asticode/go-astiav v0.38.0
