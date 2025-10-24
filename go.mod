@@ -57,3 +57,5 @@ require (
 	google.golang.org/protobuf v1.36.5 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 )
+
+replace github.com/asticode/go-astiav v0.38.0 => ./vendor/github.com/asticode/go-astiav
