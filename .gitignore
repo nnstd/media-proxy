@@ -2,3 +2,7 @@ compose.dev.yaml
 
 .env
 .env.local
+
+# FFmpeg source
+ffmpeg/
+ffmpeg-7.0.tar.xz

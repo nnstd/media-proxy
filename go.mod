@@ -4,7 +4,7 @@ go 1.24
 
 require (
 	github.com/IGLOU-EU/go-wildcard/v2 v2.1.0
-	github.com/asticode/go-astiav v0.37.0
+	github.com/asticode/go-astiav v0.38.0
 	github.com/caarlos0/env/v11 v11.3.1
 	github.com/dgraph-io/ristretto/v2 v2.2.0
 	github.com/gen2brain/go-fitz v1.24.15
