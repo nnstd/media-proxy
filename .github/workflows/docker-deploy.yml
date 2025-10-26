@@ -59,7 +59,7 @@ jobs:
       - name: Install macOS dependencies
         if: matrix.os == 'macos-latest' && matrix.cgo == '1' && matrix.goarch == 'arm64'
         run: |
-          brew install ffmpeg webp nasm coreutils
+          brew install ffmpeg@7 webp nasm coreutils
 
       - name: Build FFmpeg from source (Linux)
         if: matrix.os == 'ubuntu-latest' && matrix.cgo == '1'
