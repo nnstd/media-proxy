@@ -97,7 +97,7 @@ jobs:
             export CGO_CFLAGS="-I/tmp/ffmpeg/include/"
             export PKG_CONFIG_PATH="/tmp/ffmpeg/lib/pkgconfig"
           elif [ "${{ matrix.os }}" = "macos-latest" ] && [ "${{ matrix.cgo }}" = "1" ]; then
-            export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig"
+            export PKG_CONFIG_PATH="/opt/homebrew/opt/ffmpeg@7/lib/pkgconfig"
           fi
           go test ./...
 
