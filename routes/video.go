@@ -29,6 +29,8 @@ func RegisterVideoRoutes(logger *zap.Logger, cache *ristretto.Cache[string, Cach
 	app.Get("/video/preview", handleVideoPreviewRequestLegacy(logger, cache, config, counters, s3cache))
 }
 
+//#region handleVideoPreviewRequest
+
 // handleVideoPreviewRequest processes video preview requests with path parameters
 func handleVideoPreviewRequest(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, s3cache *S3Cache) fiber.Handler {
 	return func(c *fiber.Ctx) error {
@@ -52,6 +54,10 @@ func handleVideoPreviewRequest(logger *zap.Logger, cache *ristretto.Cache[string
 	}
 }
 
+//#endregion
+
+//#region handleVideoPreviewRequestLegacy
+
 // handleVideoPreviewRequestLegacy handles legacy query-based video preview requests
 func handleVideoPreviewRequestLegacy(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, s3cache *S3Cache) fiber.Handler {
 	return func(c *fiber.Ctx) error {
@@ -65,6 +71,10 @@ func handleVideoPreviewRequestLegacy(logger *zap.Logger, cache *ristretto.Cache[
 		return processVideoPreview(c, logger, cache, config, counters, params, s3cache)
 	}
 }
+
+//#endregion
+
+//#region processVideoPreview
 
 // processVideoPreview handles the common video preview processing logic
 func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, params *validation.ImageContext, s3cache *S3Cache) error {
@@ -238,3 +248,5 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 
 	return c.Send(buf.Bytes())
 }
+
+//#endregion
