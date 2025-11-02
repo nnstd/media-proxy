@@ -242,7 +242,7 @@ POST /images?url=<image_url>&quality=<1-100>&webp=<true|false>&width=<width>&hei
 
 ### Video Preview
 
-#### New Path-based Format (Recommended)
+#### Path-based Format
 ```
 GET /videos/preview/q:<quality>/w:<width>/h:<height>/s:<scale>/i:<interpolation>/fp:<framePosition>/webp/sig:<signature>/{base64-encoded-url}
 ```
@@ -282,33 +282,54 @@ curl "http://localhost:3000/videos/preview/fp:30/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWR
 curl "http://localhost:3000/videos/preview/fp:half/w:320/h:240/q:85/webp/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ="
 ```
 
-#### Legacy Query-based Format (Backward Compatibility)
-```
-GET /video/preview?url=<video_url>&framePosition=<position>
-```
-
-**Parameters:**
-- `url` (required): The URL of the video to generate a preview from
-- `framePosition` (optional): Frame position to extract ("first", "half", "last", or time in seconds, default: "first")
-
-**Examples:**
-```bash
-# Basic video preview (first frame)
-curl "http://localhost:3000/video/preview?url=https://example.com/video.mp4" -o preview.jpg
-
-# Video preview from the middle of the video
-curl "http://localhost:3000/video/preview?url=https://example.com/video.mp4&framePosition=half" -o preview.jpg
-
-# Video preview from 30 seconds into the video
-curl "http://localhost:3000/video/preview?url=https://example.com/video.mp4&framePosition=30" -o preview.jpg
-```
-
 **Response:**
-- Returns a JPEG thumbnail of the first frame
-- Content-Type: `image/jpeg`
+- Returns a JPEG or WebP thumbnail of the extracted frame
+- Content-Type: `image/jpeg` or `image/webp` (if WebP conversion is enabled)
 - Cache-Control: `public, max-age=3600`
 - Validates that the URL origin is in the allowed list
 - Validates that the content type is a supported video format
+
+### Video Proxy
+
+#### Path-based Format
+```
+GET /videos/sig:<signature>/{base64-encoded-url}
+```
+
+**Path Parameters:**
+- `sig` or `signature`: HMAC signature for URL validation (optional for HTTP/HTTPS origins, required for S3 explicit locations)
+- `{base64-encoded-url}`: Base64 URL-encoded video URL or S3 location (required)
+
+**Features:**
+- Supports HTTP Range requests for video streaming (partial content)
+- Proxies raw video bytes from HTTP/HTTPS origins
+- Supports proxying from S3/MinIO storage (if explicit location provided)
+- Forwards relevant headers (Content-Type, Accept-Ranges, Content-Length, Content-Range)
+- Returns appropriate HTTP status codes (200 OK or 206 Partial Content)
+
+**Examples:**
+```bash
+# Proxy video from HTTP origin
+curl "http://localhost:3000/videos/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" \
+  -o video.mp4
+
+# Proxy video with Range request (first 1MB)
+curl "http://localhost:3000/videos/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" \
+  -H "Range: bytes=0-1048575" \
+  -o video_partial.mp4
+
+# Proxy video from S3 location (requires signature)
+curl "http://localhost:3000/videos/sig:abc123/aHR0cHM6Ly9zMy5hbWF6b25hd3MuY29tL2J1Y2tldC92aWRlby5tcDQ=" \
+  -o video.mp4
+```
+
+**Response:**
+- Returns raw video bytes
+- Content-Type: Original video content type (e.g., `video/mp4`)
+- Accept-Ranges: `bytes`
+- Supports Content-Range header for partial content responses (206 Partial Content)
+- Validates that the URL origin is in the allowed list (for HTTP/HTTPS origins)
+- Validates HMAC signature for S3 explicit locations
 
 ## URL Encoding for Path-based Format
 
@@ -352,7 +373,7 @@ curl "http://localhost:3000/image?url=https://example.com/photo.jpg&webp=true&qu
 
 ### Video Preview Generation
 ```bash
-# Path-based format (recommended) - first frame
+# Path-based format - first frame
 curl "http://localhost:3000/videos/preview/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" \
   -H "Accept: image/jpeg" \
   -o thumbnail.jpg
@@ -361,16 +382,18 @@ curl "http://localhost:3000/videos/preview/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tc
 curl "http://localhost:3000/videos/preview/fp:half/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" \
   -H "Accept: image/jpeg" \
   -o thumbnail.jpg
+```
 
-# Legacy query-based format - first frame
-curl "http://localhost:3000/video/preview?url=https://example.com/video.mp4" \
-  -H "Accept: image/jpeg" \
-  -o thumbnail.jpg
+### Video Proxying
+```bash
+# Proxy full video
+curl "http://localhost:3000/videos/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" \
+  -o video.mp4
 
-# Legacy query-based format - frame from middle of video
-curl "http://localhost:3000/video/preview?url=https://example.com/video.mp4&framePosition=half" \
-  -H "Accept: image/jpeg" \
-  -o thumbnail.jpg
+# Proxy video with Range request
+curl "http://localhost:3000/videos/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" \
+  -H "Range: bytes=0-1048575" \
+  -o video_partial.mp4
 ```
 
 ### Image Upload
@@ -401,6 +424,11 @@ curl -X POST "http://localhost:3000/images?url=https://example.com/image.jpg&web
 <!-- Video thumbnail from middle of video -->
 <img src="http://localhost:3000/videos/preview/fp:half/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" 
      alt="Video thumbnail from middle">
+
+<!-- Video proxy for HTML5 video player -->
+<video controls>
+  <source src="http://localhost:3000/videos/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" type="video/mp4">
+</video>
 ```
 
 ## Security Features
@@ -441,11 +469,14 @@ curl "http://localhost:3000/videos/preview/aHR0cHM6Ly9leGFtcGxlLmNvbS9zYW1wbGUub
 # Test path-based video preview (middle frame)
 curl "http://localhost:3000/videos/preview/fp:half/aHR0cHM6Ly9leGFtcGxlLmNvbS9zYW1wbGUubXA0"
 
-# Test legacy query-based video preview (first frame)
-curl "http://localhost:3000/video/preview?url=https://example.com/sample.mp4"
+# Test video proxy
+curl "http://localhost:3000/videos/aHR0cHM6Ly9leGFtcGxlLmNvbS9zYW1wbGUubXA0" \
+  -o test_video.mp4
 
-# Test legacy query-based video preview (middle frame)
-curl "http://localhost:3000/video/preview?url=https://example.com/sample.mp4&framePosition=half"
+# Test video proxy with Range request
+curl "http://localhost:3000/videos/aHR0cHM6Ly9leGFtcGxlLmNvbS9zYW1wbGUubXA0" \
+  -H "Range: bytes=0-1048575" \
+  -o test_video_partial.mp4
 
 # Test health check
 curl "http://localhost:3000/health"
