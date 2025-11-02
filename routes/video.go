@@ -4,12 +4,17 @@ import (
 	"context"
 	"fmt"
 	"mime"
+	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/minio/minio-go/v7"
 	"go.uber.org/zap"
 
 	"image/jpeg"
+	"media-proxy/client"
 	"media-proxy/config"
 	"media-proxy/metrics"
 	"media-proxy/pool"
@@ -25,8 +30,8 @@ func RegisterVideoRoutes(logger *zap.Logger, cache *ristretto.Cache[string, Cach
 	// New path-based route: /videos/preview/q:50/w:500/h:300/webp/{base64-encoded-url}
 	app.Get("/videos/preview/*", handleVideoPreviewRequest(logger, cache, config, counters, s3cache))
 
-	// Legacy query-based route for backward compatibility
-	app.Get("/video/preview", handleVideoPreviewRequestLegacy(logger, cache, config, counters, s3cache))
+	// Proxy routes for raw video bytes (support Range)
+	app.Get("/videos/*", handleVideoProxyRequest(logger, cache, config, counters, s3cache))
 }
 
 //#region handleVideoPreviewRequest
@@ -54,21 +59,18 @@ func handleVideoPreviewRequest(logger *zap.Logger, cache *ristretto.Cache[string
 	}
 }
 
-//#endregion
-
-//#region handleVideoPreviewRequestLegacy
-
-// handleVideoPreviewRequestLegacy handles legacy query-based video preview requests
-func handleVideoPreviewRequestLegacy(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, s3cache *S3Cache) fiber.Handler {
+// handleVideoProxyRequest processes raw video proxy requests (path params)
+func handleVideoProxyRequest(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, s3cache *S3Cache) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		logger.Info("video preview request received", zap.String("url", c.Query("url")))
+		pathParams := c.Params("*")
+		logger.Info("video proxy request received", zap.String("pathParams", pathParams))
 
-		ok, status, err, params := validation.ProcessImageContext(logger, c, config)
+		ok, status, err, params := validation.ProcessImageContextFromPath(logger, pathParams, config)
 		if !ok {
 			return c.Status(status).SendString(err.Error())
 		}
 
-		return processVideoPreview(c, logger, cache, config, counters, params, s3cache)
+		return processVideoProxy(c, logger, cache, config, counters, params, s3cache)
 	}
 }
 
@@ -247,6 +249,186 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 	counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 
 	return c.Send(buf.Bytes())
+}
+
+//#endregion
+
+//#region parseRangeHeader
+
+// parseRangeHeader parses a single Range header of the form "bytes=start-end".
+// Returns start, end (end == -1 means to the end), hasRange, error
+func parseRangeHeader(h string) (int64, int64, bool, error) {
+	if h == "" {
+		return 0, -1, false, nil
+	}
+	if !strings.HasPrefix(h, "bytes=") {
+		return 0, -1, false, fmt.Errorf("unsupported range unit")
+	}
+	spec := strings.TrimPrefix(h, "bytes=")
+	// only support single range
+	if strings.Contains(spec, ",") {
+		return 0, -1, false, fmt.Errorf("multiple ranges not supported")
+	}
+	parts := strings.SplitN(spec, "-", 2)
+	if len(parts) != 2 {
+		return 0, -1, false, fmt.Errorf("invalid range")
+	}
+	if parts[0] == "" {
+		// suffix range: -N (last N bytes) -> unsupported for S3 simple handling
+		n, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			return 0, -1, false, err
+		}
+		return -n, -1, true, nil
+	}
+	start, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return 0, -1, false, err
+	}
+	if parts[1] == "" {
+		return start, -1, true, nil
+	}
+	end, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return 0, -1, false, err
+	}
+	return start, end, true, nil
+}
+
+//#endregion
+
+//#region processVideoProxy
+
+// processVideoProxy streams raw video bytes from either S3 (explicit location) or HTTP/HTTPS origin.
+// Supports Range requests and forwards relevant headers.
+func processVideoProxy(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, params *validation.ImageContext, s3cache *S3Cache) error {
+	logger.Info("processing video proxy", zap.String("url", params.Url), zap.String("location", params.CustomObjectKey))
+
+	rangeHeader := c.Get("Range")
+
+	// If explicit S3 location provided, fetch from S3 (signature already enforced in validation)
+	if params.CustomObjectKey != "" && s3cache != nil && s3cache.Enabled && s3cache.Client != nil {
+		objKey := objectKeyFromExplicitLocation(s3cache.Prefix, params.CustomObjectKey)
+		opts := minio.GetObjectOptions{}
+		start, end, hasRange, err := parseRangeHeader(rangeHeader)
+		if err != nil {
+			logger.Error("invalid range header", zap.Error(err))
+			return c.Status(fiber.StatusRequestedRangeNotSatisfiable).SendString("invalid range")
+		}
+		if hasRange {
+			// handle suffix-range -N (we translate into start = size - N when we know size)
+			if start < 0 && end == -1 {
+				// We'll handle after Stat when we know size; for now request whole object and we'll seek
+				// But better: use SetRange with -n meaning last n bytes is not directly supported, so proceed without range and implement after Stat
+			} else {
+				if end == -1 {
+					// until end
+					opts.SetRange(start, -1)
+				} else {
+					opts.SetRange(start, end)
+				}
+			}
+		}
+
+		obj, err := s3cache.Client.GetObject(context.Background(), s3cache.Bucket, objKey, opts)
+		if err != nil {
+			logger.Error("failed to get object from s3", zap.Error(err), zap.String("object", objKey))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to fetch object from s3")
+		}
+		// Ensure close when handler finishes
+		defer func() {
+			_ = obj.Close()
+		}()
+
+		info, err := obj.Stat()
+		if err != nil {
+			logger.Error("failed to stat s3 object", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to stat s3 object")
+		}
+
+		contentType := info.ContentType
+		if contentType == "" {
+			if ct, ok := info.Metadata["Content-Type"]; ok && len(ct) > 0 {
+				contentType = ct[0]
+			} else {
+				contentType = "application/octet-stream"
+			}
+		}
+
+		// If we had a suffix-range (-N), compute correct start/end now
+		if rangeHeader != "" {
+			start, end, hasRange, _ := parseRangeHeader(rangeHeader)
+			if hasRange {
+				total := info.Size
+				if start < 0 {
+					// suffix: last N bytes
+					n := -start
+					if n > total {
+						start = 0
+					} else {
+						start = total - n
+					}
+					end = total - 1
+				} else if end == -1 {
+					end = info.Size - 1
+				}
+				if start < 0 || start >= info.Size || start > end {
+					return c.Status(fiber.StatusRequestedRangeNotSatisfiable).SendString("range not satisfiable")
+				}
+				length := end - start + 1
+				c.Set("Accept-Ranges", "bytes")
+				c.Set("Content-Type", contentType)
+				c.Set("Content-Length", strconv.FormatInt(length, 10))
+				c.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, info.Size))
+				// Return Partial Content
+				return c.Status(http.StatusPartialContent).SendStream(obj)
+			}
+		}
+
+		// No range requested
+		c.Set("Accept-Ranges", "bytes")
+		c.Set("Content-Type", contentType)
+		c.Set("Content-Length", strconv.FormatInt(info.Size, 10))
+		return c.Status(http.StatusOK).SendStream(obj)
+	}
+
+	// Otherwise proxy via HTTP/HTTPS
+	req, err := http.NewRequestWithContext(c.Context(), http.MethodGet, params.Url, nil)
+	if err != nil {
+		logger.Error("failed to create request", zap.Error(err))
+		return c.Status(fiber.StatusInternalServerError).SendString("failed to create request to origin")
+	}
+	// Forward Range header if present
+	if rangeHeader != "" {
+		req.Header.Set("Range", rangeHeader)
+	}
+
+	resp, err := client.GetHTTPClient().Do(req)
+	if err != nil {
+		logger.Error("failed to fetch origin", zap.Error(err))
+		return c.Status(fiber.StatusInternalServerError).SendString("failed to fetch origin")
+	}
+	// ensure body closed after streaming
+	defer resp.Body.Close()
+
+	// Forward major headers
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		c.Set("Content-Type", ct)
+	}
+	if ar := resp.Header.Get("Accept-Ranges"); ar != "" {
+		c.Set("Accept-Ranges", ar)
+	} else {
+		c.Set("Accept-Ranges", "bytes")
+	}
+	if cr := resp.Header.Get("Content-Range"); cr != "" {
+		c.Set("Content-Range", cr)
+	}
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		c.Set("Content-Length", cl)
+	}
+
+	// Pass through status code (200 or 206 expected)
+	return c.Status(resp.StatusCode).SendStream(resp.Body)
 }
 
 //#endregion
