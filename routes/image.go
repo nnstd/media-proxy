@@ -38,8 +38,6 @@ func RegisterImageRoutes(logger *zap.Logger, cache *ristretto.Cache[string, Cach
 
 //#region handleImageRequest
 
-//#region handleImageRequest
-
 // handleImageRequest processes image requests with path parameters
 func handleImageRequest(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, s3cache *S3Cache) fiber.Handler {
 	return func(c *fiber.Ctx) error {
