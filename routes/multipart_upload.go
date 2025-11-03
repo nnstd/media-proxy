@@ -2,6 +2,8 @@ package routes
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -28,6 +30,7 @@ type UploadPart struct {
 // UploadInfo represents the multi-part upload tracking information
 type UploadInfo struct {
 	UploadID      string       `json:"uploadId"`
+	UploadToken   string       `json:"uploadToken"` // Token specific to this upload session
 	Location      string       `json:"location"`
 	TotalSize     int64        `json:"totalSize"`
 	ChunkSize     int64        `json:"chunkSize"`
@@ -75,6 +78,15 @@ func (r *RedisUploadTracker) Close() error {
 	return r.client.Close()
 }
 
+// generateUploadToken generates a secure random token for upload authentication
+func generateUploadToken() (string, error) {
+	bytes := make([]byte, 32) // 256-bit token
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
 // InitializeUpload creates upload tracking information and returns part details
 func (r *RedisUploadTracker) InitializeUpload(ctx context.Context, uploadID, location string, totalSize int64, chunkSize int64, contentType string, deadline time.Time) (*UploadInfo, error) {
 	if r == nil || r.client == nil {
@@ -83,6 +95,12 @@ func (r *RedisUploadTracker) InitializeUpload(ctx context.Context, uploadID, loc
 
 	if chunkSize <= 0 {
 		chunkSize = DefaultChunkSize
+	}
+
+	// Generate upload-specific token
+	uploadToken, err := generateUploadToken()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate upload token: %w", err)
 	}
 
 	// Calculate parts
@@ -108,6 +126,7 @@ func (r *RedisUploadTracker) InitializeUpload(ctx context.Context, uploadID, loc
 
 	uploadInfo := &UploadInfo{
 		UploadID:      uploadID,
+		UploadToken:   uploadToken,
 		Location:      location,
 		TotalSize:     totalSize,
 		ChunkSize:     chunkSize,

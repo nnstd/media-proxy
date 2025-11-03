@@ -8,13 +8,17 @@ The server provides three endpoints:
 - Upload a single part: POST /videos/multiparts/:uploadId/parts/:partIndex
 - Check upload status: GET /videos/multiparts/:uploadId
 
-Security: All multi-part endpoints require the `token` query parameter matching the `APP_TOKEN` configuration value.
-Uploading must also be enabled via `APP_UPLOADING_ENABLED=true` and S3 must be configured.
-Redis is required for upload tracking when using multi-part uploads.
+Security: 
+- The initialization endpoint requires `token` query parameter matching `APP_TOKEN`.
+- Part upload requires `uploadToken` (a unique token generated per upload session, returned by init).
+- Status check requires `token` query parameter matching `APP_TOKEN`.
+- Uploading must be enabled via `APP_UPLOADING_ENABLED=true` and S3 must be configured.
+- Redis is required for upload tracking when using multi-part uploads.
 
 ## Key concepts
 
 - uploadId: A server-generated identifier for the multi-part upload session. Returned by the initialization endpoint.
+- uploadToken: A secure random token generated per upload session. Use this to authenticate part uploads (not APP_TOKEN).
 - parts: The file is split into N parts according to the configured chunk size. Each part has index, offset and size.
 - partIndex: Zero-based index of a part in the upload session.
 - chunkSize: The per-part size in bytes. Default is 80 MB (80 * 1024 * 1024). Can be overridden during init.
@@ -49,6 +53,7 @@ Response (200 OK)
 ```json
 {
   "uploadId": "<upload-id>",
+  "uploadToken": "<secure-random-token>",
   "location": "videos/user123/my-video.mp4",
   "totalSize": 157286400,
   "chunkSize": 83886080,
@@ -69,13 +74,14 @@ Errors
 
 Notes
 - The server computes partsCount = ceil(size / chunkSize) and returns an array of part metadata with offsets and sizes.
+- The server generates a unique `uploadToken` for this session. Save this token - you'll need it to upload parts.
 - Upload tracking is stored in Redis under the key `upload:{uploadId}` and kept until the upload `expiresAt` (or a configured TTL).
 
 ## 2) Upload a part
 
 Endpoint
 ```
-POST /videos/multiparts/:uploadId/parts/:partIndex?token={token}
+POST /videos/multiparts/:uploadId/parts/:partIndex?uploadToken={uploadToken}
 ```
 
 Path parameters
@@ -83,12 +89,13 @@ Path parameters
 - partIndex (required) — zero-based part index to upload
 
 Query parameters
-- token (required) — must match `APP_TOKEN`
+- uploadToken (required) — the unique token returned by the init endpoint (NOT APP_TOKEN)
 
 Form data
 - video (required) — the multipart `video` field containing raw bytes for this part. The server expects the part size to exactly match the declared size for this part.
 
 Behavior
+- The server validates the `uploadToken` against the stored upload session.
 - The server reads the `uploadId` info from Redis, validates the `partIndex` and the part size.
 - The part is stored in S3 under `{location}.part{partIndex}` using the configured S3 client.
 - The server marks the part as uploaded in Redis.
@@ -97,7 +104,6 @@ Behavior
 Response (200 OK)
 ```json
 {
-  "success": true,
   "uploadId": "1234567890-videos/user123/video.mp4",
   "partIndex": 0,
   "size": 83886080,
@@ -108,12 +114,10 @@ Response (200 OK)
 When the last part is uploaded:
 ```json
 {
-  "success": true,
   "uploadId": "1234567890-videos/user123/video.mp4",
   "partIndex": 1,
   "size": 73400320,
-  "complete": true,
-  "message": "upload complete, parts will be merged"
+  "complete": true
 }
 ```
 
@@ -185,7 +189,7 @@ curl -X POST \
 ### cURL: upload part 0
 ```bash
 curl -X POST \
-  "http://localhost:3000/videos/multiparts/<UPLOAD_ID>/parts/0?token=${APP_TOKEN}" \
+  "http://localhost:3000/videos/multiparts/<UPLOAD_ID>/parts/0?uploadToken=${UPLOAD_TOKEN}" \
   -F "video=@part0.bin" \
   -i
 ```

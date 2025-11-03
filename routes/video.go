@@ -669,13 +669,14 @@ func handleMultipartUploadInit(logger *zap.Logger, config *config.Config, upload
 
 		// Return upload information
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{
-			"uploadId":   uploadInfo.UploadID,
-			"location":   uploadInfo.Location,
-			"totalSize":  uploadInfo.TotalSize,
-			"chunkSize":  uploadInfo.ChunkSize,
-			"partsCount": uploadInfo.PartsCount,
-			"parts":      uploadInfo.Parts,
-			"expiresAt":  uploadInfo.ExpiresAt,
+			"uploadId":    uploadInfo.UploadID,
+			"uploadToken": uploadInfo.UploadToken,
+			"location":    uploadInfo.Location,
+			"totalSize":   uploadInfo.TotalSize,
+			"chunkSize":   uploadInfo.ChunkSize,
+			"partsCount":  uploadInfo.PartsCount,
+			"parts":       uploadInfo.Parts,
+			"expiresAt":   uploadInfo.ExpiresAt,
 		})
 	}
 }
@@ -685,7 +686,8 @@ func handleMultipartUploadInit(logger *zap.Logger, config *config.Config, upload
 //#region handleMultipartUploadPart
 
 // handleMultipartUploadPart uploads a single part of a multi-part upload
-// Required query params: token, uploadId, partIndex
+// Required path params: uploadId, partIndex
+// Required query params: uploadToken (generated during init, not APP_TOKEN)
 func handleMultipartUploadPart(logger *zap.Logger, config *config.Config, counters *metrics.Metrics, s3cache *S3Cache, uploadTracker *RedisUploadTracker) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		logger.Info("multipart upload part request received")
@@ -705,17 +707,24 @@ func handleMultipartUploadPart(logger *zap.Logger, config *config.Config, counte
 			return c.Status(fiber.StatusServiceUnavailable).SendString("video upload service unavailable")
 		}
 
-		// Validate token
-		token := c.Query("token")
-		if token == "" || token != config.Token {
-			logger.Error("invalid or missing token")
-			return c.Status(fiber.StatusForbidden).SendString("invalid token")
-		}
-
 		// Get upload ID from path parameter
 		uploadID := c.Params("uploadId")
 		if uploadID == "" {
 			return c.Status(fiber.StatusBadRequest).SendString("uploadId parameter is required")
+		}
+
+		// Get upload info first to validate token
+		uploadInfo, err := uploadTracker.GetUploadInfo(context.Background(), uploadID)
+		if err != nil {
+			logger.Error("failed to get upload info", zap.Error(err))
+			return c.Status(fiber.StatusNotFound).SendString("upload not found or expired")
+		}
+
+		// Validate upload token (not APP_TOKEN)
+		uploadToken := c.Query("uploadToken")
+		if uploadToken == "" || uploadToken != uploadInfo.UploadToken {
+			logger.Error("invalid or missing upload token")
+			return c.Status(fiber.StatusForbidden).SendString("invalid upload token")
 		}
 
 		// Get part index from path parameter
@@ -727,13 +736,6 @@ func handleMultipartUploadPart(logger *zap.Logger, config *config.Config, counte
 		var partIndex int
 		if _, err := fmt.Sscanf(partIndexStr, "%d", &partIndex); err != nil {
 			return c.Status(fiber.StatusBadRequest).SendString("invalid partIndex format")
-		}
-
-		// Get upload info
-		uploadInfo, err := uploadTracker.GetUploadInfo(context.Background(), uploadID)
-		if err != nil {
-			logger.Error("failed to get upload info", zap.Error(err))
-			return c.Status(fiber.StatusNotFound).SendString("upload not found or expired")
 		}
 
 		// Check if deadline has passed
