@@ -96,12 +96,14 @@ The service is configured via environment variables:
 | `APP_CACHE_BUFFER_ITEMS` | Cache buffer items | No | `64` |
 | `APP_TOKEN` | Token for image upload authentication | No | Empty |
 | `APP_HMAC_KEY` | HMAC key for URL signing | No | Empty |
+| `APP_UPLOADING_ENABLED` | Enable video uploading to S3 | No | `false` |
 
 ### Example Configuration
 ```bash
 export APP_ALLOWED_ORIGINS="example.com,cdn.example.com,media.example.org"
 export APP_TOKEN="your-upload-token"
 export APP_HMAC_KEY="your-hmac-secret-key"
+export APP_UPLOADING_ENABLED=true  # Enable video uploads
 ```
 
 ## API Endpoints
@@ -246,6 +248,122 @@ curl "http://localhost:3000/videos/sig:abc123/aHR0cHM6Ly9zMy5hbWF6b25hd3MuY29tL2
 - Validates that the URL origin is in the allowed list (for HTTP/HTTPS origins)
 - Validates HMAC signature for S3 explicit locations
 
+### Video Upload
+
+Upload videos directly to S3 storage with secure signature-based authentication.
+
+#### Configuration
+```bash
+export APP_UPLOADING_ENABLED=true
+export APP_HMAC_KEY="your-secret-hmac-key"
+export S3_ENABLED=true
+export S3_ENDPOINT="s3.amazonaws.com"
+export S3_ACCESS_KEY_ID="your-access-key"
+export S3_SECRET_ACCESS_KEY="your-secret-key"
+export S3_BUCKET="your-bucket"
+export S3_SSL=true
+export APP_MAX_VIDEO_SIZE_MB=100
+```
+
+#### Endpoint
+```
+POST /videos?deadline={unix_timestamp}&location={base64_location}&signature={hmac_signature}
+```
+
+**Query Parameters:**
+- `deadline`: Unix timestamp when the upload permission expires (required)
+- `location`: Base64 URL-safe encoded S3 object key where the video will be stored (required)
+- `signature`: HMAC-SHA256 signature of `deadline|location` (required)
+
+**Form Data:**
+- `video`: The video file to upload (required)
+
+**Response (201 Created):**
+```json
+{
+  "success": true,
+  "location": "videos/user123/my-video.mp4",
+  "size": 1048576
+}
+```
+
+#### Generate Upload Signature (Node.js)
+```javascript
+const crypto = require('crypto');
+
+function generateVideoUploadSignature(hmacKey, deadline, location) {
+    // Create message: deadline|location
+    const message = `${deadline}|${location}`;
+    
+    // Generate HMAC-SHA256 signature
+    const hmac = crypto.createHmac('sha256', hmacKey);
+    hmac.update(message);
+    const signature = hmac.digest('hex');
+    
+    // Encode location in base64 URL-safe format
+    const locationEncoded = Buffer.from(location)
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=/g, '');
+    
+    return { signature, locationEncoded, deadline };
+}
+
+// Usage
+const hmacKey = process.env.APP_HMAC_KEY;
+const deadline = Math.floor(Date.now() / 1000) + (5 * 60); // 5 minutes
+const location = 'videos/user123/my-video.mp4';
+
+const { signature, locationEncoded } = generateVideoUploadSignature(
+    hmacKey,
+    deadline,
+    location
+);
+
+console.log(`deadline=${deadline}`);
+console.log(`location=${locationEncoded}`);
+console.log(`signature=${signature}`);
+```
+
+#### Upload Video Example
+```bash
+# Using cURL
+curl -X POST \
+  "http://localhost:3000/videos?deadline=1730678400&location=dmlkZW9zL3VzZXIxMjMvbXktdmlkZW8ubXA0&signature=abc123..." \
+  -F "video=@/path/to/video.mp4"
+```
+
+```javascript
+// Using JavaScript/Fetch API
+const formData = new FormData();
+formData.append('video', videoFile);
+
+const uploadUrl = new URL('http://localhost:3000/videos');
+uploadUrl.searchParams.set('deadline', deadline);
+uploadUrl.searchParams.set('location', locationEncoded);
+uploadUrl.searchParams.set('signature', signature);
+
+const response = await fetch(uploadUrl, {
+    method: 'POST',
+    body: formData
+});
+
+const result = await response.json();
+console.log('Upload result:', result);
+// Output: { success: true, location: "videos/user123/my-video.mp4", size: 1048576 }
+```
+
+#### Security Features
+- **Deadline-based expiration**: Upload permissions expire after the specified deadline
+- **HMAC signature validation**: Prevents unauthorized uploads
+- **S3 location control**: Videos are uploaded to predetermined S3 paths
+- **MIME type validation**: Only video files are accepted
+- **File size limits**: Configure `APP_MAX_VIDEO_SIZE_MB` to prevent large uploads
+- **Path sanitization**: Prevents directory traversal and invalid characters
+
+For more details, see [VIDEO_UPLOAD.md](VIDEO_UPLOAD.md).
+
 ## URL Encoding for Path-based Format
 
 For the new path-based format, you need to base64 URL-encode your image/video URLs:
@@ -313,6 +431,26 @@ curl "http://localhost:3000/videos/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" \
 # Path-based format (recommended)
 curl -X POST "http://localhost:3000/images/upload/q:90/webp/t:your-token/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc=" \
   --data-binary @image.jpg
+```
+
+### Video Upload
+```bash
+# Generate signature (Node.js example)
+node -e "
+const crypto = require('crypto');
+const hmacKey = 'your-secret-hmac-key';
+const deadline = Math.floor(Date.now() / 1000) + 300; // 5 minutes
+const location = 'videos/user123/my-video.mp4';
+const message = \`\${deadline}|\${location}\`;
+const signature = crypto.createHmac('sha256', hmacKey).update(message).digest('hex');
+const locationEncoded = Buffer.from(location).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+console.log(\`deadline=\${deadline}&location=\${locationEncoded}&signature=\${signature}\`);
+"
+
+# Upload video using generated parameters
+curl -X POST \
+  "http://localhost:3000/videos?deadline=1730678400&location=dmlkZW9zL3VzZXIxMjMvbXktdmlkZW8ubXA0&signature=abc123..." \
+  -F "video=@video.mp4"
 ```
 
 ### HTML Integration

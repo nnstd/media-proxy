@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"media-proxy/config"
 	"media-proxy/pool"
@@ -469,4 +470,65 @@ func ValidateContentLength(contentLength string, maxSizeMB int) error {
 	}
 
 	return ValidateFileSize(size, maxSizeMB)
+}
+
+// ValidateVideoUpload validates video upload request with deadline and signature
+// Expected parameters: deadline (unix timestamp), location (base64 URL-safe encoded S3 key), signature (HMAC of deadline|location)
+func ValidateVideoUpload(c *fiber.Ctx, config *config.Config) (location string, status int, err error) {
+	if !config.UploadingEnabled {
+		return "", fiber.StatusForbidden, fmt.Errorf("video uploading is disabled")
+	}
+
+	if config.HmacKey == "" {
+		return "", fiber.StatusInternalServerError, fmt.Errorf("hmac key not configured")
+	}
+
+	// Get deadline
+	deadlineStr := c.Query("deadline")
+	if deadlineStr == "" {
+		return "", fiber.StatusBadRequest, fmt.Errorf("deadline parameter is required")
+	}
+
+	deadline, err := strconv.ParseInt(deadlineStr, 10, 64)
+	if err != nil {
+		return "", fiber.StatusBadRequest, fmt.Errorf("invalid deadline format")
+	}
+
+	// Check if deadline has passed
+	now := time.Now().Unix()
+	if now > deadline {
+		return "", fiber.StatusForbidden, fmt.Errorf("upload deadline has expired")
+	}
+
+	// Get location
+	locationEncoded := c.Query("location")
+	if locationEncoded == "" {
+		return "", fiber.StatusBadRequest, fmt.Errorf("location parameter is required")
+	}
+
+	// Decode location
+	decodedLocation, err := DecodeBase64URL(locationEncoded)
+	if err != nil {
+		return "", fiber.StatusBadRequest, fmt.Errorf("invalid location encoding: %w", err)
+	}
+
+	// Sanitize location
+	sanitized, err := sanitizeLocation(decodedLocation)
+	if err != nil {
+		return "", fiber.StatusBadRequest, fmt.Errorf("invalid location: %w", err)
+	}
+
+	// Get signature
+	signature := c.Query("signature")
+	if signature == "" {
+		return "", fiber.StatusBadRequest, fmt.Errorf("signature parameter is required")
+	}
+
+	// Validate signature: HMAC(deadline|location)
+	message := deadlineStr + "|" + sanitized
+	if !compareHmacForMessage(message, signature, config.HmacKey) {
+		return "", fiber.StatusForbidden, fmt.Errorf("invalid signature")
+	}
+
+	return sanitized, fiber.StatusOK, nil
 }

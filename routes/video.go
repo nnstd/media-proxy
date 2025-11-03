@@ -3,6 +3,7 @@ package routes
 import (
 	"context"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"strconv"
@@ -32,6 +33,9 @@ func RegisterVideoRoutes(logger *zap.Logger, cache *ristretto.Cache[string, Cach
 
 	// Proxy routes for raw video bytes (support Range)
 	app.Get("/videos/*", handleVideoProxyRequest(logger, cache, config, counters, s3cache))
+
+	// Video upload route
+	app.Post("/videos", handleVideoUpload(logger, config, counters, s3cache))
 }
 
 //#region handleVideoPreviewRequest
@@ -429,6 +433,101 @@ func processVideoProxy(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[
 
 	// Pass through status code (200 or 206 expected)
 	return c.Status(resp.StatusCode).SendStream(resp.Body)
+}
+
+//#endregion
+
+//#region handleVideoUpload
+
+// handleVideoUpload processes video upload requests
+// Requires: deadline (unix timestamp), location (base64-encoded S3 key), signature (HMAC of deadline|location)
+func handleVideoUpload(logger *zap.Logger, config *config.Config, counters *metrics.Metrics, s3cache *S3Cache) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		logger.Info("video upload request received")
+
+		// Validate upload parameters (deadline, location, signature)
+		location, status, err := validation.ValidateVideoUpload(c, config)
+		if err != nil {
+			logger.Error("upload validation failed", zap.Error(err))
+			return c.Status(status).SendString(err.Error())
+		}
+
+		// Check if S3 is enabled
+		if s3cache == nil || !s3cache.Enabled || s3cache.Client == nil {
+			logger.Error("S3 storage is not enabled or configured")
+			return c.Status(fiber.StatusServiceUnavailable).SendString("video upload service unavailable")
+		}
+
+		// Get video file from multipart form
+		fileHeader, err := c.FormFile("video")
+		if err != nil {
+			logger.Error("failed to get video file", zap.Error(err))
+			return c.Status(fiber.StatusBadRequest).SendString("video file is required")
+		}
+
+		// Validate file size
+		if config.MaxVideoSize > 0 {
+			maxSizeBytes := int64(config.MaxVideoSize) * 1024 * 1024
+			if fileHeader.Size > maxSizeBytes {
+				logger.Error("video file too large", zap.Int64("size", fileHeader.Size), zap.Int("maxMB", config.MaxVideoSize))
+				return c.Status(fiber.StatusRequestEntityTooLarge).SendString(fmt.Sprintf("video file exceeds maximum size of %d MB", config.MaxVideoSize))
+			}
+		}
+
+		// Open and read video file
+		file, err := fileHeader.Open()
+		if err != nil {
+			logger.Error("failed to open video file", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to open video file")
+		}
+		defer file.Close()
+
+		// Validate content type
+		contentType := fileHeader.Header.Get("Content-Type")
+		if contentType == "" {
+			logger.Error("no content type provided")
+			return c.Status(fiber.StatusBadRequest).SendString("content type is required")
+		}
+
+		parsedContentType, _, err := mime.ParseMediaType(contentType)
+		if err != nil {
+			logger.Error("failed to parse content type", zap.Error(err))
+			return c.Status(fiber.StatusBadRequest).SendString("invalid content type")
+		}
+
+		if !validation.IsVideoMime(parsedContentType) {
+			logger.Error("invalid content type", zap.String("contentType", parsedContentType))
+			return c.Status(fiber.StatusBadRequest).SendString(fmt.Sprintf("content type '%s' is not a video", parsedContentType))
+		}
+
+		// Read file contents
+		videoData, err := io.ReadAll(file)
+		if err != nil {
+			logger.Error("failed to read video file", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to read video file")
+		}
+
+		// Upload to S3
+		err = s3cache.PutAtLocation(context.Background(), location, videoData, parsedContentType)
+		if err != nil {
+			logger.Error("failed to upload video to S3", zap.Error(err), zap.String("location", location))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to upload video")
+		}
+
+		// Increment metrics
+		counters.SuccessfullyServed.WithLabelValues("video-upload", "upload", "upload").Inc()
+
+		logger.Info("video uploaded successfully",
+			zap.String("location", location),
+			zap.String("contentType", parsedContentType),
+			zap.Int64("size", fileHeader.Size))
+
+		// Return success with location
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+			"location": location,
+			"size":     fileHeader.Size,
+		})
+	}
 }
 
 //#endregion
