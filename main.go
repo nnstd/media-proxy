@@ -101,9 +101,22 @@ func main() {
 		defer uploadTracker.Close()
 	}
 
+	// Configure body limit based on chunk size or max video size
+	bodyLimit := 4 * 1024 * 1024 // Default 4MB
+	if config.UploadingEnabled {
+		if config.ChunkSize > 0 {
+			bodyLimit = int(config.ChunkSize) + (1 * 1024 * 1024) // ChunkSize + 1MB buffer
+		} else if config.MaxVideoSize > 0 {
+			bodyLimit = config.MaxVideoSize * 1024 * 1024
+		} else {
+			bodyLimit = 100 * 1024 * 1024 // Default 100MB if no limits set
+		}
+	}
+
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
 		Prefork:               config.Prefork,
+		BodyLimit:             bodyLimit,
 	})
 
 	prometheusModule := fiberprometheus.New("media-proxy")
