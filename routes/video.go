@@ -27,15 +27,20 @@ import (
 )
 
 // RegisterVideoRoutes sets up video processing routes
-func RegisterVideoRoutes(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, app *fiber.App, counters *metrics.Metrics, s3cache *S3Cache) {
+func RegisterVideoRoutes(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, app *fiber.App, counters *metrics.Metrics, s3cache *S3Cache, uploadTracker *RedisUploadTracker) {
 	// New path-based route: /videos/preview/q:50/w:500/h:300/webp/{base64-encoded-url}
 	app.Get("/videos/preview/*", handleVideoPreviewRequest(logger, cache, config, counters, s3cache))
 
 	// Proxy routes for raw video bytes (support Range)
 	app.Get("/videos/*", handleVideoProxyRequest(logger, cache, config, counters, s3cache))
 
-	// Video upload route
+	// Video upload route (single upload)
 	app.Post("/videos", handleVideoUpload(logger, config, counters, s3cache))
+
+	// Multi-part upload routes
+	app.Post("/videos/multiparts", handleMultipartUploadInit(logger, config, uploadTracker))
+	app.Post("/videos/multiparts/:uploadId/parts/:partIndex", handleMultipartUploadPart(logger, config, counters, s3cache, uploadTracker))
+	app.Get("/videos/multiparts/:uploadId", handleMultipartUploadStatus(logger, config, uploadTracker))
 }
 
 //#region handleVideoPreviewRequest
@@ -526,6 +531,346 @@ func handleVideoUpload(logger *zap.Logger, config *config.Config, counters *metr
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 			"location": location,
 			"size":     fileHeader.Size,
+		})
+	}
+}
+
+//#endregion
+
+//#region handleMultipartUploadInit
+
+// handleMultipartUploadInit initializes a multi-part upload session
+// Required query params: token, deadline, location, size, contentType
+// Optional: chunkSize
+func handleMultipartUploadInit(logger *zap.Logger, config *config.Config, uploadTracker *RedisUploadTracker) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		logger.Info("multipart upload init request received")
+
+		// Check if uploading is enabled
+		if !config.UploadingEnabled {
+			return c.Status(fiber.StatusForbidden).SendString("video uploading is disabled")
+		}
+
+		// Check if Redis is configured
+		if uploadTracker == nil {
+			return c.Status(fiber.StatusServiceUnavailable).SendString("multi-part upload not configured")
+		}
+
+		// Validate token
+		token := c.Query("token")
+		if token == "" || token != config.Token {
+			logger.Error("invalid or missing token")
+			return c.Status(fiber.StatusForbidden).SendString("invalid token")
+		}
+
+		// Get deadline
+		deadlineStr := c.Query("deadline")
+		if deadlineStr == "" {
+			return c.Status(fiber.StatusBadRequest).SendString("deadline parameter is required")
+		}
+
+		deadline, err := time.Parse(time.RFC3339, deadlineStr)
+		if err != nil {
+			// Try parsing as Unix timestamp
+			var deadlineUnix int64
+			if _, err := fmt.Sscanf(deadlineStr, "%d", &deadlineUnix); err == nil {
+				deadline = time.Unix(deadlineUnix, 0)
+			} else {
+				return c.Status(fiber.StatusBadRequest).SendString("invalid deadline format")
+			}
+		}
+
+		// Check if deadline has passed
+		if time.Now().After(deadline) {
+			return c.Status(fiber.StatusForbidden).SendString("upload deadline has expired")
+		}
+
+		// Get location
+		location := c.Query("location")
+		if location == "" {
+			return c.Status(fiber.StatusBadRequest).SendString("location parameter is required")
+		}
+
+		// Get file size
+		sizeStr := c.Query("size")
+		if sizeStr == "" {
+			return c.Status(fiber.StatusBadRequest).SendString("size parameter is required")
+		}
+
+		var totalSize int64
+		if _, err := fmt.Sscanf(sizeStr, "%d", &totalSize); err != nil {
+			return c.Status(fiber.StatusBadRequest).SendString("invalid size format")
+		}
+
+		if totalSize <= 0 {
+			return c.Status(fiber.StatusBadRequest).SendString("size must be greater than 0")
+		}
+
+		// Validate file size
+		if config.MaxVideoSize > 0 {
+			maxSizeBytes := int64(config.MaxVideoSize) * 1024 * 1024
+			if totalSize > maxSizeBytes {
+				return c.Status(fiber.StatusRequestEntityTooLarge).SendString(fmt.Sprintf("video file exceeds maximum size of %d MB", config.MaxVideoSize))
+			}
+		}
+
+		// Get content type
+		contentType := c.Query("contentType")
+		if contentType == "" {
+			return c.Status(fiber.StatusBadRequest).SendString("contentType parameter is required")
+		}
+
+		parsedContentType, _, err := mime.ParseMediaType(contentType)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).SendString("invalid content type")
+		}
+
+		if !validation.IsVideoMime(parsedContentType) {
+			return c.Status(fiber.StatusBadRequest).SendString(fmt.Sprintf("content type '%s' is not a video", parsedContentType))
+		}
+
+		// Get optional chunk size
+		chunkSize := config.ChunkSize
+		if chunkSize <= 0 {
+			chunkSize = DefaultChunkSize
+		}
+
+		chunkSizeStr := c.Query("chunkSize")
+		if chunkSizeStr != "" {
+			var customChunkSize int64
+			if _, err := fmt.Sscanf(chunkSizeStr, "%d", &customChunkSize); err == nil && customChunkSize > 0 {
+				chunkSize = customChunkSize
+			}
+		}
+
+		// Generate upload ID
+		uploadID := fmt.Sprintf("%d-%s", time.Now().UnixNano(), location)
+
+		// Initialize upload in Redis
+		uploadInfo, err := uploadTracker.InitializeUpload(
+			context.Background(),
+			uploadID,
+			location,
+			totalSize,
+			chunkSize,
+			parsedContentType,
+			deadline,
+		)
+		if err != nil {
+			logger.Error("failed to initialize upload", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to initialize upload")
+		}
+
+		logger.Info("multipart upload initialized",
+			zap.String("uploadId", uploadID),
+			zap.String("location", location),
+			zap.Int64("totalSize", totalSize),
+			zap.Int("partsCount", uploadInfo.PartsCount))
+
+		// Return upload information
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"uploadId":   uploadInfo.UploadID,
+			"location":   uploadInfo.Location,
+			"totalSize":  uploadInfo.TotalSize,
+			"chunkSize":  uploadInfo.ChunkSize,
+			"partsCount": uploadInfo.PartsCount,
+			"parts":      uploadInfo.Parts,
+			"expiresAt":  uploadInfo.ExpiresAt,
+		})
+	}
+}
+
+//#endregion
+
+//#region handleMultipartUploadPart
+
+// handleMultipartUploadPart uploads a single part of a multi-part upload
+// Required query params: token, uploadId, partIndex
+func handleMultipartUploadPart(logger *zap.Logger, config *config.Config, counters *metrics.Metrics, s3cache *S3Cache, uploadTracker *RedisUploadTracker) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		logger.Info("multipart upload part request received")
+
+		// Check if uploading is enabled
+		if !config.UploadingEnabled {
+			return c.Status(fiber.StatusForbidden).SendString("video uploading is disabled")
+		}
+
+		// Check if Redis is configured
+		if uploadTracker == nil {
+			return c.Status(fiber.StatusServiceUnavailable).SendString("multi-part upload not configured")
+		}
+
+		// Check if S3 is enabled
+		if s3cache == nil || !s3cache.Enabled || s3cache.Client == nil {
+			return c.Status(fiber.StatusServiceUnavailable).SendString("video upload service unavailable")
+		}
+
+		// Validate token
+		token := c.Query("token")
+		if token == "" || token != config.Token {
+			logger.Error("invalid or missing token")
+			return c.Status(fiber.StatusForbidden).SendString("invalid token")
+		}
+
+		// Get upload ID from path parameter
+		uploadID := c.Params("uploadId")
+		if uploadID == "" {
+			return c.Status(fiber.StatusBadRequest).SendString("uploadId parameter is required")
+		}
+
+		// Get part index from path parameter
+		partIndexStr := c.Params("partIndex")
+		if partIndexStr == "" {
+			return c.Status(fiber.StatusBadRequest).SendString("partIndex parameter is required")
+		}
+
+		var partIndex int
+		if _, err := fmt.Sscanf(partIndexStr, "%d", &partIndex); err != nil {
+			return c.Status(fiber.StatusBadRequest).SendString("invalid partIndex format")
+		}
+
+		// Get upload info
+		uploadInfo, err := uploadTracker.GetUploadInfo(context.Background(), uploadID)
+		if err != nil {
+			logger.Error("failed to get upload info", zap.Error(err))
+			return c.Status(fiber.StatusNotFound).SendString("upload not found or expired")
+		}
+
+		// Check if deadline has passed
+		if time.Now().After(uploadInfo.ExpiresAt) {
+			return c.Status(fiber.StatusForbidden).SendString("upload deadline has expired")
+		}
+
+		// Validate part index
+		if partIndex < 0 || partIndex >= uploadInfo.PartsCount {
+			return c.Status(fiber.StatusBadRequest).SendString(fmt.Sprintf("invalid partIndex: must be between 0 and %d", uploadInfo.PartsCount-1))
+		}
+
+		// Get the part info
+		part := uploadInfo.Parts[partIndex]
+
+		// Get video part from multipart form
+		fileHeader, err := c.FormFile("video")
+		if err != nil {
+			logger.Error("failed to get video file", zap.Error(err))
+			return c.Status(fiber.StatusBadRequest).SendString("video file is required")
+		}
+
+		// Validate part size
+		if fileHeader.Size != part.Size {
+			return c.Status(fiber.StatusBadRequest).SendString(fmt.Sprintf("part size mismatch: expected %d bytes, got %d bytes", part.Size, fileHeader.Size))
+		}
+
+		// Open and read video part
+		file, err := fileHeader.Open()
+		if err != nil {
+			logger.Error("failed to open video file", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to open video file")
+		}
+		defer file.Close()
+
+		// Read file contents
+		videoData, err := io.ReadAll(file)
+		if err != nil {
+			logger.Error("failed to read video file", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to read video file")
+		}
+
+		// Upload part to S3 with part suffix
+		partLocation := fmt.Sprintf("%s.part%d", uploadInfo.Location, partIndex)
+		err = s3cache.PutAtLocation(context.Background(), partLocation, videoData, uploadInfo.ContentType)
+		if err != nil {
+			logger.Error("failed to upload video part to S3", zap.Error(err), zap.String("location", partLocation))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to upload video part")
+		}
+
+		// Mark part as uploaded
+		err = uploadTracker.MarkPartUploaded(context.Background(), uploadID, partIndex)
+		if err != nil {
+			logger.Error("failed to mark part as uploaded", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to update upload status")
+		}
+
+		// Check if upload is complete
+		isComplete, err := uploadTracker.IsUploadComplete(context.Background(), uploadID)
+		if err != nil {
+			logger.Error("failed to check upload completion", zap.Error(err))
+		}
+
+		// Increment metrics
+		counters.SuccessfullyServed.WithLabelValues("video-upload-part", "upload", "upload").Inc()
+
+		logger.Info("video part uploaded successfully",
+			zap.String("uploadId", uploadID),
+			zap.Int("partIndex", partIndex),
+			zap.String("location", partLocation),
+			zap.Int64("size", fileHeader.Size),
+			zap.Bool("complete", isComplete))
+
+		response := fiber.Map{
+			"uploadId":  uploadID,
+			"partIndex": partIndex,
+			"size":      fileHeader.Size,
+			"complete":  isComplete,
+		}
+
+		return c.Status(fiber.StatusOK).JSON(response)
+	}
+}
+
+//#endregion
+
+//#region handleMultipartUploadStatus
+
+// handleMultipartUploadStatus returns the status of a multi-part upload
+// Requires token authentication
+func handleMultipartUploadStatus(logger *zap.Logger, config *config.Config, uploadTracker *RedisUploadTracker) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		logger.Info("multipart upload status request received")
+
+		// Check if Redis is configured
+		if uploadTracker == nil {
+			return c.Status(fiber.StatusServiceUnavailable).SendString("multi-part upload not configured")
+		}
+
+		// Validate token
+		token := c.Query("token")
+		if token == "" || token != config.Token {
+			logger.Error("invalid or missing token")
+			return c.Status(fiber.StatusForbidden).SendString("invalid token")
+		}
+
+		// Get upload ID from path parameter
+		uploadID := c.Params("uploadId")
+		if uploadID == "" {
+			return c.Status(fiber.StatusBadRequest).SendString("uploadId is required")
+		}
+
+		// Get upload info
+		uploadInfo, err := uploadTracker.GetUploadInfo(context.Background(), uploadID)
+		if err != nil {
+			logger.Error("failed to get upload info", zap.Error(err))
+			return c.Status(fiber.StatusNotFound).SendString("upload not found or expired")
+		}
+
+		// Check if complete
+		isComplete := len(uploadInfo.UploadedParts) == uploadInfo.PartsCount
+
+		// Calculate progress
+		progress := float64(len(uploadInfo.UploadedParts)) / float64(uploadInfo.PartsCount) * 100
+
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"id":            uploadInfo.UploadID,
+			"location":      uploadInfo.Location,
+			"totalSize":     uploadInfo.TotalSize,
+			"partsCount":    uploadInfo.PartsCount,
+			"uploadedParts": uploadInfo.UploadedParts,
+			"uploadedCount": len(uploadInfo.UploadedParts),
+			"complete":      isComplete,
+			"progress":      progress,
+			"contentType":   uploadInfo.ContentType,
+			"createdAt":     uploadInfo.CreatedAt,
+			"expiresAt":     uploadInfo.ExpiresAt,
 		})
 	}
 }

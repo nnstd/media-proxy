@@ -4,10 +4,10 @@ import (
 	"log"
 	"time"
 
+	"github.com/gofiber/fiber/v2/middleware/cache"
 	"github.com/gofiber/fiber/v2/middleware/compress"
 	"github.com/gofiber/fiber/v2/middleware/etag"
 	"github.com/gofiber/fiber/v2/middleware/healthcheck"
-	"github.com/gofiber/fiber/v2/middleware/cache"
 
 	"go.uber.org/zap"
 
@@ -88,6 +88,19 @@ func main() {
 		logger.Warn("failed to initialize S3 cache", zap.Error(s3err))
 	}
 
+	// Initialize optional Redis upload tracker
+	uploadTracker, redisErr := routes.NewRedisUploadTracker(
+		config.RedisAddr,
+		config.RedisPassword,
+		config.RedisDB,
+	)
+	if redisErr != nil {
+		logger.Warn("failed to initialize Redis upload tracker", zap.Error(redisErr))
+	}
+	if uploadTracker != nil {
+		defer uploadTracker.Close()
+	}
+
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
 		Prefork:               config.Prefork,
@@ -111,7 +124,7 @@ func main() {
 	}))
 
 	routes.RegisterImageRoutes(logger, cacheStore, &config, app, metrics, s3cache)
-	routes.RegisterVideoRoutes(logger, cacheStore, &config, app, metrics, s3cache)
+	routes.RegisterVideoRoutes(logger, cacheStore, &config, app, metrics, s3cache, uploadTracker)
 
 	address := config.Address
 	if address == "" {

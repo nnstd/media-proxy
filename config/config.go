@@ -35,4 +35,13 @@ type Config struct {
 	S3Bucket          string `json:"s3Bucket" env:"S3_BUCKET"`
 	S3SSL             bool   `json:"s3SSL" env:"S3_SSL"`
 	S3Prefix          string `json:"s3Prefix" env:"S3_PREFIX"`
+
+	// Optional Redis for multi-part upload tracking
+	RedisEnabled  bool   `json:"redisEnabled" env:"REDIS_ENABLED"`
+	RedisAddr     string `json:"redisAddr" env:"REDIS_ADDR"`
+	RedisPassword string `json:"redisPassword" env:"REDIS_PASSWORD"`
+	RedisDB       int    `json:"redisDB" env:"REDIS_DB"`
+
+	// Multi-part upload configuration
+	ChunkSize int64 `json:"chunkSize" env:"APP_CHUNK_SIZE"` // Default: 80MB
 }

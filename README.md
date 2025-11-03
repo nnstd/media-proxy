@@ -97,6 +97,11 @@ The service is configured via environment variables:
 | `APP_TOKEN` | Token for image upload authentication | No | Empty |
 | `APP_HMAC_KEY` | HMAC key for URL signing | No | Empty |
 | `APP_UPLOADING_ENABLED` | Enable video uploading to S3 | No | `false` |
+| `APP_CHUNK_SIZE` | Chunk size for multi-part uploads (bytes) | No | `83886080` (80MB) |
+| `REDIS_ENABLED` | Enable Redis for multi-part upload tracking | No | `false` |
+| `REDIS_ADDR` | Redis server address | No | `localhost:6379` |
+| `REDIS_PASSWORD` | Redis password | No | Empty |
+| `REDIS_DB` | Redis database number | No | `0` |
 
 ### Example Configuration
 ```bash
@@ -104,6 +109,13 @@ export APP_ALLOWED_ORIGINS="example.com,cdn.example.com,media.example.org"
 export APP_TOKEN="your-upload-token"
 export APP_HMAC_KEY="your-hmac-secret-key"
 export APP_UPLOADING_ENABLED=true  # Enable video uploads
+
+# Optional: Redis for multi-part upload tracking
+export REDIS_ENABLED=true
+export REDIS_ADDR="localhost:6379"
+export REDIS_PASSWORD=""
+export REDIS_DB=0
+export APP_CHUNK_SIZE=83886080  # 80MB chunks
 ```
 
 ## API Endpoints
@@ -363,6 +375,207 @@ console.log('Upload result:', result);
 - **Path sanitization**: Prevents directory traversal and invalid characters
 
 For more details, see [VIDEO_UPLOAD.md](VIDEO_UPLOAD.md).
+
+### Multi-Part Video Upload
+
+For large video files, the service supports multi-part uploads with progress tracking via Redis.
+
+#### Configuration
+```bash
+export APP_UPLOADING_ENABLED=true
+export APP_TOKEN="your-upload-token"
+export REDIS_ENABLED=true
+export REDIS_ADDR="localhost:6379"
+export S3_ENABLED=true
+export S3_ENDPOINT="s3.amazonaws.com"
+export S3_ACCESS_KEY_ID="your-access-key"
+export S3_SECRET_ACCESS_KEY="your-secret-key"
+export S3_BUCKET="your-bucket"
+export APP_CHUNK_SIZE=83886080  # 80MB chunks
+```
+
+#### Step 1: Initialize Multi-Part Upload
+```
+POST /videos/multiparts?token={token}&deadline={unix_timestamp}&location={location}&size={bytes}&contentType={mime_type}&chunkSize={bytes}
+```
+
+**Query Parameters:**
+- `token`: Authentication token (required)
+- `deadline`: Unix timestamp when upload expires (required)
+- `location`: S3 object key where video will be stored (required)
+- `size`: Total file size in bytes (required)
+- `contentType`: Video MIME type (required)
+- `chunkSize`: Optional chunk size in bytes (default: 80MB)
+
+**Response (200 OK):**
+```json
+{
+  "uploadId": "1234567890-videos/user123/video.mp4",
+  "location": "videos/user123/video.mp4",
+  "totalSize": 157286400,
+  "chunkSize": 83886080,
+  "partsCount": 2,
+  "parts": [
+    { "index": 0, "offset": 0, "size": 83886080 },
+    { "index": 1, "offset": 83886080, "size": 73400320 }
+  ],
+  "expiresAt": "2025-11-03T12:00:00Z"
+}
+```
+
+#### Step 2: Upload Each Part
+```
+POST /videos/multiparts/{uploadId}/parts/{partIndex}?token={token}
+```
+
+**Path Parameters:**
+- `uploadId`: Upload ID from initialization (required)
+- `partIndex`: Zero-based part index (required)
+
+**Query Parameters:**
+- `token`: Authentication token (required)
+
+**Form Data:**
+- `video`: The video part data (required)
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "uploadId": "1234567890-videos/user123/video.mp4",
+  "partIndex": 0,
+  "size": 83886080,
+  "complete": false
+}
+```
+
+When the last part is uploaded:
+```json
+{
+  "success": true,
+  "uploadId": "1234567890-videos/user123/video.mp4",
+  "partIndex": 1,
+  "size": 73400320,
+  "complete": true,
+  "message": "upload complete, parts will be merged"
+}
+```
+
+#### Step 3: Check Upload Status
+```
+GET /videos/multiparts/{uploadId}?token={token}
+```
+
+**Path Parameters:**
+- `uploadId`: Upload ID from initialization (required)
+
+**Query Parameters:**
+- `token`: Authentication token (required)
+
+**Response (200 OK):**
+```json
+{
+  "uploadId": "1234567890-videos/user123/video.mp4",
+  "location": "videos/user123/video.mp4",
+  "totalSize": 157286400,
+  "partsCount": 2,
+  "uploadedParts": [0, 1],
+  "uploadedCount": 2,
+  "complete": true,
+  "progress": 100,
+  "contentType": "video/mp4",
+  "createdAt": "2025-11-03T11:00:00Z",
+  "expiresAt": "2025-11-03T12:00:00Z"
+}
+```
+
+#### Example: Multi-Part Upload (Node.js)
+```javascript
+const fs = require('fs');
+const FormData = require('form-data');
+
+const CHUNK_SIZE = 80 * 1024 * 1024; // 80MB
+const token = 'your-upload-token';
+const baseUrl = 'http://localhost:3000';
+
+async function uploadVideoMultipart(filePath, location) {
+  // Get file stats
+  const stats = fs.statSync(filePath);
+  const fileSize = stats.size;
+  const contentType = 'video/mp4';
+  
+  // Calculate deadline (5 hours from now)
+  const deadline = Math.floor(Date.now() / 1000) + (5 * 3600);
+  
+  // Step 1: Initialize upload
+  const initUrl = new URL(`${baseUrl}/videos/multiparts`);
+  initUrl.searchParams.set('token', token);
+  initUrl.searchParams.set('deadline', deadline);
+  initUrl.searchParams.set('location', location);
+  initUrl.searchParams.set('size', fileSize);
+  initUrl.searchParams.set('contentType', contentType);
+  initUrl.searchParams.set('chunkSize', CHUNK_SIZE);
+  
+  const initResponse = await fetch(initUrl, { method: 'POST' });
+  const uploadInfo = await initResponse.json();
+  
+  console.log(`Upload initialized: ${uploadInfo.uploadId}`);
+  console.log(`Total parts: ${uploadInfo.partsCount}`);
+  
+  // Step 2: Upload each part
+  const fileStream = fs.createReadStream(filePath);
+  
+  for (const part of uploadInfo.parts) {
+    console.log(`Uploading part ${part.index + 1}/${uploadInfo.partsCount}...`);
+    
+    // Read chunk from file
+    const buffer = Buffer.alloc(part.size);
+    const fd = fs.openSync(filePath, 'r');
+    fs.readSync(fd, buffer, 0, part.size, part.offset);
+    fs.closeSync(fd);
+    
+    // Create form data
+    const formData = new FormData();
+    formData.append('video', buffer, { filename: 'part.mp4' });
+    
+    // Upload part
+    const uploadUrl = new URL(`${baseUrl}/videos/multiparts/${uploadInfo.uploadId}/parts/${part.index}`);
+    uploadUrl.searchParams.set('token', token);
+    
+    const partResponse = await fetch(uploadUrl, {
+      method: 'POST',
+      body: formData
+    });
+    
+    const result = await partResponse.json();
+    console.log(`Part ${part.index} uploaded (${result.complete ? 'COMPLETE' : 'in progress'})`);
+  }
+  
+  // Step 3: Check final status
+  const statusUrl = new URL(`${baseUrl}/videos/multiparts/${uploadInfo.uploadId}`);
+  statusUrl.searchParams.set('token', token);
+  
+  const statusResponse = await fetch(statusUrl);
+  const status = await statusResponse.json();
+  
+  console.log(`Upload complete: ${status.complete}`);
+  console.log(`Progress: ${status.progress}%`);
+  
+  return status;
+}
+
+// Usage
+uploadVideoMultipart('./large-video.mp4', 'videos/user123/large-video.mp4')
+  .then(status => console.log('Done!', status))
+  .catch(err => console.error('Error:', err));
+```
+
+#### Benefits of Multi-Part Upload
+- **Resume capability**: Track which parts have been uploaded
+- **Parallel uploads**: Upload multiple parts simultaneously
+- **Progress tracking**: Monitor upload progress in real-time
+- **Large file support**: Handle files larger than server memory limits
+- **Fault tolerance**: Retry individual parts on failure
 
 ## URL Encoding for Path-based Format
 
