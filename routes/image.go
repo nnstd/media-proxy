@@ -26,9 +26,6 @@ func RegisterImageRoutes(logger *zap.Logger, cache *ristretto.Cache[string, Cach
 	// New path-based route: /images/q:50/w:500/h:300/webp/{base64-encoded-url}
 	app.Get("/images/*", handleImageRequest(logger, cache, config, counters, s3cache))
 
-	// Legacy query-based route for backward compatibility
-	app.Get("/image", handleImageRequestLegacy(logger, cache, config, counters, s3cache))
-
 	// Image upload route with path parameters
 	app.Post("/images/upload/*", handleImageUpload(logger, cache, config, counters, s3cache))
 
@@ -45,20 +42,6 @@ func handleImageRequest(logger *zap.Logger, cache *ristretto.Cache[string, Cache
 		logger.Info("image request received", zap.String("pathParams", pathParams))
 
 		ok, status, err, params := validation.ProcessImageContextFromPath(logger, pathParams, config)
-		if !ok {
-			return c.Status(status).SendString(err.Error())
-		}
-
-		return processImageResponse(c, logger, cache, config, counters, params, s3cache)
-	}
-}
-
-// handleImageRequestLegacy handles legacy query-based image requests
-func handleImageRequestLegacy(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, s3cache *S3Cache) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		logger.Info("image request received", zap.String("url", c.Query("url")))
-
-		ok, status, err, params := validation.ProcessImageContext(logger, c, config)
 		if !ok {
 			return c.Status(status).SendString(err.Error())
 		}

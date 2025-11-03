@@ -155,91 +155,6 @@ curl "http://localhost:3000/images/s:0.5/i:2/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5
 curl "http://localhost:3000/images/sig:abc123/q:75/webp/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc="
 ```
 
-#### Legacy Query-based Format (Backward Compatibility)
-```
-GET /image?url=<image_url>&quality=<1-100>&webp=<true|false>&width=<width>&height=<height>&scale=<scale>&interpolation=<interpolation>&signature=<signature>
-```
-
-**Parameters:**
-- `url` (required): The URL of the image to proxy
-- `quality` (optional): Image quality for optimization (1-100, default: 100)
-- `webp` (optional): Force conversion to WebP format (true/false, default: false)
-- `width` (optional): Width of the image (default: 0)
-- `height` (optional): Height of the image (default: 0)
-- `scale` (optional): Scale factor for the image (0-1, default: 0)
-- `interpolation` (optional): Interpolation method for resizing (0-5, default: 5)
-- `signature` (optional): HMAC signature for URL validation
-
-**Examples:**
-```bash
-# Basic image proxy (original format)
-curl "http://localhost:3000/image?url=https://example.com/image.jpg"
-
-# Convert to WebP with quality optimization
-curl "http://localhost:3000/image?url=https://example.com/image.jpg&webp=true&quality=85"
-
-# Quality optimization without format conversion
-curl "http://localhost:3000/image?url=https://example.com/image.jpg&quality=75"
-
-# Rescale image
-curl "http://localhost:3000/image?url=https://example.com/image.jpg&scale=0.5"
-
-# Resize image
-curl "http://localhost:3000/image?url=https://example.com/image.jpg&width=100&height=100"
-
-# Convert PDF first page to image
-curl "http://localhost:3000/image?url=https://example.com/document.pdf"
-
-# Convert DOCX first page to WebP with resizing
-curl "http://localhost:3000/image?url=https://example.com/document.docx&webp=true&width=800&height=600"
-
-# Convert EPUB first page to thumbnail
-curl "http://localhost:3000/image?url=https://example.com/book.epub&scale=0.3&quality=85"
-
-# Convert PowerPoint first slide to image
-curl "http://localhost:3000/image?url=https://example.com/presentation.pptx&width=1200&height=800"
-```
-
-### Image Upload
-
-#### New Path-based Format (Recommended)
-```
-POST /images/upload/q:<quality>/w:<width>/h:<height>/s:<scale>/i:<interpolation>/webp/t:<token>/{base64-encoded-url}
-```
-
-**Path Parameters:**
-- `q` or `quality`: Image quality for optimization (1-100, default: 100)
-- `w` or `width`: Width of the image (default: 0)
-- `h` or `height`: Height of the image (default: 0)
-- `s` or `scale`: Scale factor for the image (0-1, default: 0)
-- `i` or `interpolation`: Interpolation method for resizing (0-5, default: 5)
-- `webp`: Force conversion to WebP format (flag, no value needed)
-- `t` or `token`: Authentication token (required)
-- `{base64-encoded-url}`: Base64 URL-encoded image URL (required)
-
-**Request Body:** Raw image data
-
-**Examples:**
-```bash
-# Upload and process image
-curl -X POST "http://localhost:3000/images/upload/q:85/webp/t:your-token/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc=" \
-  --data-binary @image.jpg
-
-# Upload and resize image
-curl -X POST "http://localhost:3000/images/upload/w:800/h:600/t:your-token/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc=" \
-  --data-binary @image.jpg
-```
-
-#### Legacy Query-based Format (Backward Compatibility)
-```
-POST /images?url=<image_url>&quality=<1-100>&webp=<true|false>&width=<width>&height=<height>&scale=<scale>&interpolation=<interpolation>&token=<token>
-```
-
-**Parameters:** Same as legacy image proxy format, plus:
-- `token` (required): Authentication token
-
-**Request Body:** Raw image data
-
 ### Video Preview
 
 #### Path-based Format
@@ -366,9 +281,6 @@ print(signature)
 ```bash
 # Path-based format (recommended)
 curl "http://localhost:3000/images/q:85/webp/aHR0cHM6Ly9leGFtcGxlLmNvbS9waG90by5qcGc="
-
-# Legacy query-based format
-curl "http://localhost:3000/image?url=https://example.com/photo.jpg&webp=true&quality=85"
 ```
 
 ### Video Preview Generation
@@ -401,10 +313,6 @@ curl "http://localhost:3000/videos/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" \
 # Path-based format (recommended)
 curl -X POST "http://localhost:3000/images/upload/q:90/webp/t:your-token/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc=" \
   --data-binary @image.jpg
-
-# Legacy query-based format
-curl -X POST "http://localhost:3000/images?url=https://example.com/image.jpg&webp=true&quality=90&token=your-token" \
-  --data-binary @image.jpg
 ```
 
 ### HTML Integration
@@ -413,9 +321,6 @@ curl -X POST "http://localhost:3000/images?url=https://example.com/image.jpg&web
 <img src="http://localhost:3000/images/q:80/webp/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc=" 
      alt="WebP optimized image">
 
-<!-- Legacy query-based format -->
-<img src="http://localhost:3000/image?url=https%3A//example.com/image.jpg&webp=true&quality=80" 
-     alt="WebP optimized image">
 
 <!-- Video thumbnail -->
 <img src="http://localhost:3000/videos/preview/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" 
@@ -459,10 +364,6 @@ The service will start on port 3000.
 ```bash
 # Test path-based image proxy
 curl "http://localhost:3000/images/aHR0cHM6Ly9odHRwYmluLm9yZy9pbWFnZS9qcGVn"
-
-# Test legacy query-based image proxy
-curl "http://localhost:3000/image?url=https://httpbin.org/image/jpeg"
-
 # Test path-based video preview (first frame)
 curl "http://localhost:3000/videos/preview/aHR0cHM6Ly9leGFtcGxlLmNvbS9zYW1wbGUubXA0"
 
