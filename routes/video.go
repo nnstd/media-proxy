@@ -644,7 +644,7 @@ func handleMultipartUploadInit(logger *zap.Logger, config *config.Config, upload
 		}
 
 		// Generate upload ID
-		uploadID := fmt.Sprintf("%d-%s", time.Now().UnixNano(), location)
+		uploadID := fmt.Sprintf("%d", time.Now().UnixNano())
 
 		// Initialize upload in Redis
 		uploadInfo, err := uploadTracker.InitializeUpload(
