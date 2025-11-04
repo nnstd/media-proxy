@@ -156,7 +156,6 @@ Response (200 OK)
   "uploadedParts": [0, 1],
   "uploadedCount": 2,
   "complete": true,
-  "progress": 100,
   "contentType": "video/mp4",
   "createdAt": "2025-11-03T11:00:00Z",
   "expiresAt": "2025-11-03T12:00:00Z"

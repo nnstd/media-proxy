@@ -858,9 +858,6 @@ func handleMultipartUploadStatus(logger *zap.Logger, config *config.Config, uplo
 		// Check if complete
 		isComplete := len(uploadInfo.UploadedParts) == uploadInfo.PartsCount
 
-		// Calculate progress
-		progress := float64(len(uploadInfo.UploadedParts)) / float64(uploadInfo.PartsCount) * 100
-
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{
 			"id":            uploadInfo.UploadID,
 			"location":      uploadInfo.Location,
@@ -869,7 +866,6 @@ func handleMultipartUploadStatus(logger *zap.Logger, config *config.Config, uplo
 			"uploadedParts": uploadInfo.UploadedParts,
 			"uploadedCount": len(uploadInfo.UploadedParts),
 			"complete":      isComplete,
-			"progress":      progress,
 			"contentType":   uploadInfo.ContentType,
 			"createdAt":     uploadInfo.CreatedAt,
 			"expiresAt":     uploadInfo.ExpiresAt,
