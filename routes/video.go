@@ -28,19 +28,19 @@ import (
 
 // RegisterVideoRoutes sets up video processing routes
 func RegisterVideoRoutes(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, app *fiber.App, counters *metrics.Metrics, s3cache *S3Cache, uploadTracker *RedisUploadTracker) {
-	// New path-based route: /videos/preview/q:50/w:500/h:300/webp/{base64-encoded-url}
-	app.Get("/videos/preview/*", handleVideoPreviewRequest(logger, cache, config, counters, s3cache))
-
-	// Proxy routes for raw video bytes (support Range)
-	app.Get("/videos/*", handleVideoProxyRequest(logger, cache, config, counters, s3cache))
+	// Multi-part upload routes (must be registered before wildcard routes)
+	app.Post("/videos/multiparts", handleMultipartUploadInit(logger, config, uploadTracker))
+	app.Post("/videos/multiparts/:uploadId/parts/:partIndex", handleMultipartUploadPart(logger, config, counters, s3cache, uploadTracker))
+	app.Get("/videos/multiparts/:uploadId", handleMultipartUploadStatus(logger, config, uploadTracker))
 
 	// Video upload route (single upload)
 	app.Post("/videos", handleVideoUpload(logger, config, counters, s3cache))
 
-	// Multi-part upload routes
-	app.Post("/videos/multiparts", handleMultipartUploadInit(logger, config, uploadTracker))
-	app.Post("/videos/multiparts/:uploadId/parts/:partIndex", handleMultipartUploadPart(logger, config, counters, s3cache, uploadTracker))
-	app.Get("/videos/multiparts/:uploadId", handleMultipartUploadStatus(logger, config, uploadTracker))
+	// New path-based route: /videos/preview/q:50/w:500/h:300/webp/{base64-encoded-url}
+	app.Get("/videos/preview/*", handleVideoPreviewRequest(logger, cache, config, counters, s3cache))
+
+	// Proxy routes for raw video bytes (support Range) - should be last as it's a catch-all
+	app.Get("/videos/*", handleVideoProxyRequest(logger, cache, config, counters, s3cache))
 }
 
 //#region handleVideoPreviewRequest
