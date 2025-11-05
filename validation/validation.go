@@ -61,6 +61,7 @@ type PathParams struct {
 
 // ParsePathParams extracts parameters from the URL path
 // Expected format: /images/q:50/w:500/h:300/s:0.8/i:2/webp/fp:half/sig:abc123/{base64-url}
+// Or with location: /images/loc:base64location/q:50/webp/sig:abc123
 func ParsePathParams(pathParams string) (*PathParams, error) {
 	params := &PathParams{
 		Quality:       100, // default values
@@ -77,13 +78,22 @@ func ParsePathParams(pathParams string) (*PathParams, error) {
 		return nil, fmt.Errorf("no path parameters found")
 	}
 
-	// The last part should be the encoded URL
+	// The last part might be the encoded URL if it doesn't look like a parameter
+	// A parameter either contains ":" or is exactly "webp"
+	var processParts []string
 	if len(parts) > 0 {
-		params.EncodedURL = parts[len(parts)-1]
-		parts = parts[:len(parts)-1] // Remove the URL from processing
+		lastPart := parts[len(parts)-1]
+		if !strings.Contains(lastPart, ":") && lastPart != "webp" {
+			// Looks like an encoded URL
+			params.EncodedURL = lastPart
+			processParts = parts[:len(parts)-1]
+		} else {
+			// All parts are parameters
+			processParts = parts
+		}
 	}
 
-	for _, part := range parts {
+	for _, part := range processParts {
 		if part == "webp" {
 			params.Webp = true
 			continue
