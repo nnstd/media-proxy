@@ -83,7 +83,6 @@ When using S3 location, you must provide:
 const crypto = require('crypto');
 
 const location = 'videos/my-video.mp4';
-const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
 const appToken = process.env.APP_TOKEN; // Your secret token
 
 // Create signature: HMAC-SHA256(location, APP_TOKEN)
@@ -100,7 +99,7 @@ const encodedLocation = Buffer.from(location)
   .replace(/=/g, '');
 
 // Build the URL
-const url = `http://localhost:3000/videos/loc:${encodedLocation}/d:${deadline}/s:${signature}`;
+const url = `http://localhost:3000/videos/loc:${encodedLocation}/s:${signature}`;
 console.log(url);
 ```
 
@@ -120,16 +119,5 @@ curl -v "http://localhost:3000/videos/loc:dmlkZW9zL215LXZpZGVvLm1wNA/s:abc123def
 - Request first 1 KiB from S3:
 
 ```bash
-curl -v -H "Range: bytes=0-1023" "http://localhost:3000/videos/loc:dmlkZW9zL215LXZpZGVvLm1wNA/d:1730822400/s:abc123def456..."
+curl -v -H "Range: bytes=0-1023" "http://localhost:3000/videos/loc:dmlkZW9zL215LXZpZGVvLm1wNA/s:abc123def456..."
 ```
-
-- S3 location with fallback URL (signature must cover both):
-
-```bash
-# When providing both URL and location, sign: URL|location
-# signature = HMAC-SHA256("https://example.com/video.mp4|videos/my-video.mp4", APP_TOKEN)
-
-curl -v "http://localhost:3000/videos/loc:dmlkZW9zL215LXZpZGVvLm1wNA/d:1730822400/s:xyz789.../aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ"
-```
-
-Replace `http://localhost:3000/videos/<encoded-path>` with the actual route that resolves to `processVideoProxy` (after validation).
