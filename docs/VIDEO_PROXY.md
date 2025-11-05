@@ -83,11 +83,11 @@ When using S3 location, you must provide:
 const crypto = require('crypto');
 
 const location = 'videos/my-video.mp4';
-const appToken = process.env.APP_TOKEN; // Your secret token
+const key = process.env.APP_HMAC_KEY;
 
-// Create signature: HMAC-SHA256(location, APP_TOKEN)
+// Create signature: HMAC-SHA256(location, APP_HMAC_KEY)
 const signature = crypto
-  .createHmac('sha256', appToken)
+  .createHmac('sha256', key)
   .update(location)
   .digest('hex');
 
