@@ -423,10 +423,12 @@ func processVideoProxy(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[
 				logger.Error("failed to get object from s3", zap.Error(err), zap.String("object", objKey))
 				return c.Status(fiber.StatusInternalServerError).SendString("failed to fetch object from s3")
 			}
-			defer obj.Close()
+			// Note: Don't defer close here - SendStream will handle closing the reader
+			// If we defer close, it will close the stream before SendStream finishes reading
 
 			// Return Partial Content
-			return c.Status(http.StatusPartialContent).SendStream(obj)
+			c.Status(http.StatusPartialContent)
+			return c.SendStream(obj)
 		}
 
 		// No range requested - stream entire file
@@ -435,12 +437,14 @@ func processVideoProxy(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[
 			logger.Error("failed to get object from s3", zap.Error(err), zap.String("object", objKey))
 			return c.Status(fiber.StatusInternalServerError).SendString("failed to fetch object from s3")
 		}
-		defer obj.Close()
+		// Note: Don't defer close here - SendStream will handle closing the reader
+		// If we defer close, it will close the stream before SendStream finishes reading
 
 		c.Set("Accept-Ranges", "bytes")
 		c.Set("Content-Type", contentType)
 		c.Set("Content-Length", strconv.FormatInt(info.Size, 10))
-		return c.Status(http.StatusOK).SendStream(obj)
+		c.Status(http.StatusOK)
+		return c.SendStream(obj)
 	}
 
 	// Otherwise proxy via HTTP/HTTPS
