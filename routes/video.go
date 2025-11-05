@@ -361,41 +361,12 @@ func processVideoProxy(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[
 	if params.CustomObjectKey != "" && s3cache != nil && s3cache.Enabled && s3cache.Client != nil {
 		// Use S3 location from bucket root (no prefix)
 		objKey := params.CustomObjectKey
-		opts := minio.GetObjectOptions{}
-		start, end, hasRange, err := parseRangeHeader(rangeHeader)
-		if err != nil {
-			logger.Error("invalid range header", zap.Error(err))
-			return c.Status(fiber.StatusRequestedRangeNotSatisfiable).SendString("invalid range")
-		}
-		if hasRange {
-			// handle suffix-range -N (we translate into start = size - N when we know size)
-			if start < 0 && end == -1 {
-				// We'll handle after Stat when we know size; for now request whole object and we'll seek
-				// But better: use SetRange with -n meaning last n bytes is not directly supported, so proceed without range and implement after Stat
-			} else {
-				if end == -1 {
-					// until end
-					opts.SetRange(start, -1)
-				} else {
-					opts.SetRange(start, end)
-				}
-			}
-		}
 
-		obj, err := s3cache.Client.GetObject(context.Background(), s3cache.Bucket, objKey, opts)
-		if err != nil {
-			logger.Error("failed to get object from s3", zap.Error(err), zap.String("object", objKey))
-			return c.Status(fiber.StatusInternalServerError).SendString("failed to fetch object from s3")
-		}
-		// Ensure close when handler finishes
-		defer func() {
-			_ = obj.Close()
-		}()
-
-		info, err := obj.Stat()
+		// First, get object info to determine size and content type
+		info, err := s3cache.Client.StatObject(context.Background(), s3cache.Bucket, objKey, minio.StatObjectOptions{})
 		if err != nil {
 			logger.Error("failed to stat s3 object", zap.Error(err))
-			return c.Status(fiber.StatusInternalServerError).SendString("failed to stat s3 object")
+			return c.Status(fiber.StatusNotFound).SendString("object not found")
 		}
 
 		contentType := info.ContentType
@@ -407,37 +378,65 @@ func processVideoProxy(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[
 			}
 		}
 
-		// If we had a suffix-range (-N), compute correct start/end now
-		if rangeHeader != "" {
-			start, end, hasRange, _ := parseRangeHeader(rangeHeader)
-			if hasRange {
-				total := info.Size
-				if start < 0 {
-					// suffix: last N bytes
-					n := -start
-					if n > total {
-						start = 0
-					} else {
-						start = total - n
-					}
-					end = total - 1
-				} else if end == -1 {
-					end = info.Size - 1
-				}
-				if start < 0 || start >= info.Size || start > end {
-					return c.Status(fiber.StatusRequestedRangeNotSatisfiable).SendString("range not satisfiable")
-				}
-				length := end - start + 1
-				c.Set("Accept-Ranges", "bytes")
-				c.Set("Content-Type", contentType)
-				c.Set("Content-Length", strconv.FormatInt(length, 10))
-				c.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, info.Size))
-				// Return Partial Content
-				return c.Status(http.StatusPartialContent).SendStream(obj)
-			}
+		// Parse range header and compute actual byte range
+		start, end, hasRange, err := parseRangeHeader(rangeHeader)
+		if err != nil {
+			logger.Error("invalid range header", zap.Error(err))
+			return c.Status(fiber.StatusRequestedRangeNotSatisfiable).SendString("invalid range")
 		}
 
-		// No range requested
+		opts := minio.GetObjectOptions{}
+		if hasRange {
+			total := info.Size
+
+			// Handle suffix-range (-N means last N bytes)
+			if start < 0 {
+				n := -start
+				if n > total {
+					start = 0
+				} else {
+					start = total - n
+				}
+				end = total - 1
+			} else if end == -1 {
+				// start to end of file
+				end = total - 1
+			}
+
+			// Validate range
+			if start < 0 || start >= total || start > end {
+				return c.Status(fiber.StatusRequestedRangeNotSatisfiable).SendString("range not satisfiable")
+			}
+
+			// Set range for minio request
+			opts.SetRange(start, end)
+
+			length := end - start + 1
+			c.Set("Accept-Ranges", "bytes")
+			c.Set("Content-Type", contentType)
+			c.Set("Content-Length", strconv.FormatInt(length, 10))
+			c.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, total))
+
+			// Get object with range
+			obj, err := s3cache.Client.GetObject(context.Background(), s3cache.Bucket, objKey, opts)
+			if err != nil {
+				logger.Error("failed to get object from s3", zap.Error(err), zap.String("object", objKey))
+				return c.Status(fiber.StatusInternalServerError).SendString("failed to fetch object from s3")
+			}
+			defer obj.Close()
+
+			// Return Partial Content
+			return c.Status(http.StatusPartialContent).SendStream(obj)
+		}
+
+		// No range requested - stream entire file
+		obj, err := s3cache.Client.GetObject(context.Background(), s3cache.Bucket, objKey, opts)
+		if err != nil {
+			logger.Error("failed to get object from s3", zap.Error(err), zap.String("object", objKey))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to fetch object from s3")
+		}
+		defer obj.Close()
+
 		c.Set("Accept-Ranges", "bytes")
 		c.Set("Content-Type", contentType)
 		c.Set("Content-Length", strconv.FormatInt(info.Size, 10))
