@@ -95,7 +95,8 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 		zap.Int("height", params.Height),
 		zap.Float64("scale", params.Scale),
 		zap.String("framePosition", params.FramePosition),
-		zap.String("url", params.Url))
+		zap.String("url", params.Url),
+		zap.String("location", params.CustomObjectKey))
 
 	cacheKey := cacheKey(params.Url, params)
 	cacheValue, ok := cache.Get(cacheKey)
@@ -130,27 +131,73 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 		}
 	}
 
-	// First check if it's a video by doing a HEAD request
-	responseContentType, err := validation.GetContentType(params.Url)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).SendString("failed to check video")
-	}
+	var videoURL string
+	var parsedContentType string
 
-	if responseContentType == "" {
-		return c.Status(fiber.StatusForbidden).SendString("no content type received")
-	}
+	// If explicit S3 location provided, use it directly (signature already enforced in validation)
+	if params.CustomObjectKey != "" && s3cache != nil && s3cache.Enabled && s3cache.Client != nil {
+		// Use S3 location as video source
+		objKey := objectKeyFromExplicitLocation(s3cache.Prefix, params.CustomObjectKey)
 
-	parsedContentType, _, err := mime.ParseMediaType(responseContentType)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).SendString("failed to parse content type")
-	}
+		// Get object info to validate it's a video
+		obj, err := s3cache.Client.StatObject(context.Background(), s3cache.Bucket, objKey, minio.StatObjectOptions{})
+		if err != nil {
+			logger.Error("failed to stat s3 object", zap.Error(err), zap.String("object", objKey))
+			return c.Status(fiber.StatusNotFound).SendString("video not found in s3")
+		}
 
-	if !validation.IsVideoMime(parsedContentType) {
-		return c.Status(fiber.StatusForbidden).SendString(fmt.Sprintf("content type '%s' is not allowed", parsedContentType))
+		parsedContentType = obj.ContentType
+		if parsedContentType == "" {
+			if ct, ok := obj.Metadata["Content-Type"]; ok && len(ct) > 0 {
+				parsedContentType = ct[0]
+			} else {
+				parsedContentType = "application/octet-stream"
+			}
+		}
+
+		parsed, _, err := mime.ParseMediaType(parsedContentType)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to parse content type")
+		}
+		parsedContentType = parsed
+
+		if !validation.IsVideoMime(parsedContentType) {
+			return c.Status(fiber.StatusForbidden).SendString(fmt.Sprintf("content type '%s' is not a video", parsedContentType))
+		}
+
+		// Generate presigned URL for ffmpeg to access
+		presignedURL, err := s3cache.Client.PresignedGetObject(context.Background(), s3cache.Bucket, objKey, time.Hour, nil)
+		if err != nil {
+			logger.Error("failed to generate presigned url", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to generate presigned url")
+		}
+		videoURL = presignedURL.String()
+	} else {
+		// Use HTTP/HTTPS origin
+		responseContentType, err := validation.GetContentType(params.Url)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to check video")
+		}
+
+		if responseContentType == "" {
+			return c.Status(fiber.StatusForbidden).SendString("no content type received")
+		}
+
+		parsed, _, err := mime.ParseMediaType(responseContentType)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to parse content type")
+		}
+		parsedContentType = parsed
+
+		if !validation.IsVideoMime(parsedContentType) {
+			return c.Status(fiber.StatusForbidden).SendString(fmt.Sprintf("content type '%s' is not allowed", parsedContentType))
+		}
+
+		videoURL = params.Url
 	}
 
 	// Extract frame from specified position
-	frameImage, err := extractFrameFromPosition(params.Url, params.FramePosition)
+	frameImage, err := extractFrameFromPosition(videoURL, params.FramePosition)
 	if err != nil {
 		logger.Error("failed to extract frame", zap.Error(err), zap.String("position", params.FramePosition))
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to extract video preview")
