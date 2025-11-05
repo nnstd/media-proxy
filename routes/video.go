@@ -119,18 +119,8 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 		return c.Send(cacheValue.Body)
 	}
 
-	// Try S3 cache if enabled
+	// Try S3 cache if enabled (check for cached preview, not source video)
 	if s3cache != nil && s3cache.Enabled {
-		if params.CustomObjectKey != "" {
-			if s3val, err := s3cache.GetAtLocation(context.Background(), params.CustomObjectKey); err == nil && s3val != nil {
-				counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(identifier)).Inc()
-				counters.ServedCached.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(identifier)).Inc()
-
-				c.Set("Content-Type", s3val.ContentType)
-				return c.Send(s3val.Body)
-			}
-		}
-
 		if s3val, err := s3cache.Get(context.Background(), cacheKey); err == nil && s3val != nil {
 			counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(identifier)).Inc()
 			counters.ServedCached.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(identifier)).Inc()
@@ -147,8 +137,8 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 
 	// If explicit S3 location provided, use it directly (signature already enforced in validation)
 	if params.CustomObjectKey != "" && s3cache != nil && s3cache.Enabled && s3cache.Client != nil {
-		// Use S3 location as video source
-		objKey := objectKeyFromExplicitLocation(s3cache.Prefix, params.CustomObjectKey)
+		// Use S3 location as video source (from bucket root, no prefix)
+		objKey := params.CustomObjectKey
 
 		// Get object info to validate it's a video
 		obj, err := s3cache.Client.StatObject(context.Background(), s3cache.Bucket, objKey, minio.StatObjectOptions{})
@@ -270,13 +260,8 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 		if s3cache != nil && s3cache.Enabled {
 			data := make([]byte, len(value.Body))
 			copy(data, value.Body)
-			if params.CustomObjectKey != "" {
-				go func() {
-					_ = s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, data, value.ContentType)
-				}()
-			} else {
-				go func() { _ = s3cache.Put(context.Background(), cacheKey, data, value.ContentType) }()
-			}
+			// Always store preview in cache using cacheKey (with prefix)
+			go func() { _ = s3cache.Put(context.Background(), cacheKey, data, value.ContentType) }()
 		}
 
 		c.Set("Content-Type", "image/webp")
@@ -303,13 +288,8 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 	if s3cache != nil && s3cache.Enabled {
 		data := make([]byte, len(value.Body))
 		copy(data, value.Body)
-		if params.CustomObjectKey != "" {
-			go func() {
-				_ = s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, data, value.ContentType)
-			}()
-		} else {
-			go func() { _ = s3cache.Put(context.Background(), cacheKey, data, value.ContentType) }()
-		}
+		// Always store preview in cache using cacheKey (with prefix)
+		go func() { _ = s3cache.Put(context.Background(), cacheKey, data, value.ContentType) }()
 	}
 
 	c.Set("Content-Type", "image/jpeg")
@@ -379,7 +359,8 @@ func processVideoProxy(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[
 
 	// If explicit S3 location provided, fetch from S3 (signature already enforced in validation)
 	if params.CustomObjectKey != "" && s3cache != nil && s3cache.Enabled && s3cache.Client != nil {
-		objKey := objectKeyFromExplicitLocation(s3cache.Prefix, params.CustomObjectKey)
+		// Use S3 location from bucket root (no prefix)
+		objKey := params.CustomObjectKey
 		opts := minio.GetObjectOptions{}
 		start, end, hasRange, err := parseRangeHeader(rangeHeader)
 		if err != nil {

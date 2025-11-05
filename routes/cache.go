@@ -190,3 +190,49 @@ func (s *S3Cache) PutAtLocationExpiring(ctx context.Context, location string, bo
 	})
 	return err
 }
+
+// GetDirect fetches an object directly from S3 by key (from bucket root, no prefix added)
+// Used for user-provided S3 locations
+func (s *S3Cache) GetDirect(ctx context.Context, objectKey string) (*CacheValue, error) {
+	if s == nil || !s.Enabled || s.Client == nil {
+		return nil, nil
+	}
+	obj, err := s.Client.GetObject(ctx, s.Bucket, objectKey, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, nil
+	}
+	data, rerr := io.ReadAll(obj)
+	if rerr != nil {
+		return nil, nil
+	}
+	info, herr := obj.Stat()
+	contentType := "application/octet-stream"
+	if herr == nil {
+		if ct, ok := info.Metadata["Content-Type"]; ok && len(ct) > 0 {
+			contentType = ct[0]
+		} else if info.ContentType != "" {
+			contentType = info.ContentType
+		}
+	}
+	return &CacheValue{Body: data, ContentType: contentType}, nil
+}
+
+// PutDirect uploads object directly to S3 by key (to bucket root, no prefix added)
+// Used for user-provided S3 locations
+func (s *S3Cache) PutDirect(ctx context.Context, objectKey string, body []byte, contentType string) error {
+	return s.PutDirectExpiring(ctx, objectKey, body, contentType, time.Now().Add(time.Hour*24))
+}
+
+// PutDirectExpiring uploads object directly to S3 by key with a specified TTL (no prefix added)
+// Used for user-provided S3 locations
+func (s *S3Cache) PutDirectExpiring(ctx context.Context, objectKey string, body []byte, contentType string, expire time.Time) error {
+	if s == nil || !s.Enabled || s.Client == nil {
+		return nil
+	}
+	reader := bytes.NewReader(body)
+	_, err := s.Client.PutObject(ctx, s.Bucket, objectKey, reader, int64(len(body)), minio.PutObjectOptions{
+		ContentType: contentType,
+		Expires:     expire,
+	})
+	return err
+}
