@@ -373,13 +373,13 @@ console.log('Upload result:', result);
 - **File size limits**: Configure `APP_MAX_VIDEO_SIZE_MB` to prevent large uploads
 - **Path sanitization**: Prevents directory traversal and invalid characters
 
-For more details, see [VIDEO_UPLOAD.md](VIDEO_UPLOAD.md).
+For more details, see [VIDEO_UPLOAD.md](docs/VIDEO_UPLOAD.md).
 
 ### Multi-Part Video Upload
 
 For large video files, the service supports multi-part uploads with progress tracking via Redis.
 
-For detailed documentation including API endpoints, parameters, examples, and security model, see [MULTIPART_UPLOAD.md](MULTIPART_UPLOAD.md).
+For detailed documentation including API endpoints, parameters, examples, and security model, see [MULTIPART_UPLOAD.md](docs/MULTIPART_UPLOAD.md).
 
 ## URL Encoding for Path-based Format
 
