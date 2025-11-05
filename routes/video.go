@@ -456,6 +456,10 @@ func processVideoProxy(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[
 	// Forward Range header if present
 	if rangeHeader != "" {
 		req.Header.Set("Range", rangeHeader)
+		// Disable compression for Range requests to prevent conflicts
+		// When Accept-Encoding: gzip is sent with Range header, some servers/CDNs
+		// may ignore the Range header or behave incorrectly
+		req.Header.Set("Accept-Encoding", "identity")
 	}
 
 	resp, err := client.GetHTTPClient().Do(req)
