@@ -174,6 +174,11 @@ func (s *S3Cache) Put(ctx context.Context, cacheKey string, body []byte, content
 
 // PutAtLocation uploads object to S3 by explicit location key
 func (s *S3Cache) PutAtLocation(ctx context.Context, location string, body []byte, contentType string) error {
+	return s.PutAtLocationExpiring(ctx, location, body, contentType, time.Now().Add(time.Hour*24))
+}
+
+// PutAtLocationExpiring uploads object to S3 by explicit location key with a specified TTL
+func (s *S3Cache) PutAtLocationExpiring(ctx context.Context, location string, body []byte, contentType string, expire time.Time) error {
 	if s == nil || !s.Enabled || s.Client == nil {
 		return nil
 	}
@@ -181,7 +186,7 @@ func (s *S3Cache) PutAtLocation(ctx context.Context, location string, body []byt
 	reader := bytes.NewReader(body)
 	_, err := s.Client.PutObject(ctx, s.Bucket, objKey, reader, int64(len(body)), minio.PutObjectOptions{
 		ContentType: contentType,
-		Expires:     time.Now().Add(time.Hour * 24),
+		Expires:     expire,
 	})
 	return err
 }

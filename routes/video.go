@@ -780,7 +780,7 @@ func handleMultipartUploadPart(logger *zap.Logger, config *config.Config, counte
 
 		// Upload part to S3 with part suffix
 		partLocation := fmt.Sprintf("%s.part%d", uploadInfo.Location, partIndex)
-		err = s3cache.PutAtLocation(context.Background(), partLocation, videoData, uploadInfo.ContentType)
+		err = s3cache.PutAtLocationExpiring(context.Background(), partLocation, videoData, uploadInfo.ContentType, uploadInfo.ExpiresAt)
 		if err != nil {
 			logger.Error("failed to upload video part to S3", zap.Error(err), zap.String("location", partLocation))
 			return c.Status(fiber.StatusInternalServerError).SendString("failed to upload video part")
