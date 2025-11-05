@@ -290,16 +290,16 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 		return false, fiber.StatusBadRequest, fmt.Errorf("invalid path parameters: %w", err), nil
 	}
 
-	if params.EncodedURL == "" {
-		return false, fiber.StatusBadRequest, fmt.Errorf("encoded URL is required"), nil
+	// URL is optional if location is provided
+	urlParam := ""
+	if params.EncodedURL != "" {
+		urlParam, err = DecodeURL(params.EncodedURL)
+		if err != nil {
+			return false, fiber.StatusBadRequest, fmt.Errorf("failed to decode URL: %w", err), nil
+		}
 	}
 
-	urlParam, err := DecodeURL(params.EncodedURL)
-	if err != nil {
-		return false, fiber.StatusBadRequest, fmt.Errorf("failed to decode URL: %w", err), nil
-	}
-
-	// If custom location is requested, require signature and validate URL|location
+	// If custom location is requested, require signature and validate location
 	customObjectKey := ""
 	if params.Location != "" {
 		if config.HmacKey == "" || params.Signature == "" {
@@ -314,7 +314,15 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 		if serr != nil {
 			return false, fiber.StatusBadRequest, serr, nil
 		}
-		signedMsg := urlParam + "|" + sanitized
+
+		// If URL is provided, sign URL|location, otherwise just sign location
+		var signedMsg string
+		if urlParam != "" {
+			signedMsg = urlParam + "|" + sanitized
+		} else {
+			signedMsg = sanitized
+		}
+
 		if !compareHmacForMessage(signedMsg, params.Signature, config.HmacKey) {
 			return false, fiber.StatusForbidden, fmt.Errorf("invalid signature for location"), nil
 		}
@@ -323,14 +331,27 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 		if config.HmacKey == "" {
 			return false, fiber.StatusForbidden, fmt.Errorf("hmac key is not set"), nil
 		}
+		if urlParam == "" {
+			return false, fiber.StatusBadRequest, fmt.Errorf("url is required when signature is provided without location"), nil
+		}
 		if !compareHmac(urlParam, params.Signature, config.HmacKey) {
 			return false, fiber.StatusForbidden, fmt.Errorf("invalid signature"), nil
 		}
+	} else {
+		// Neither location nor signature provided, URL is required
+		if urlParam == "" {
+			return false, fiber.StatusBadRequest, fmt.Errorf("url or location is required"), nil
+		}
 	}
 
-	validOrigin, hostname := pool.ValidateUrl(logger, urlParam, config.AllowedOrigins)
-	if !validOrigin {
-		return false, fiber.StatusForbidden, fmt.Errorf("url is not allowed"), nil
+	// Validate URL if provided
+	hostname := ""
+	if urlParam != "" {
+		validOrigin, validHostname := pool.ValidateUrl(logger, urlParam, config.AllowedOrigins)
+		if !validOrigin {
+			return false, fiber.StatusForbidden, fmt.Errorf("url is not allowed"), nil
+		}
+		hostname = validHostname
 	}
 
 	if params.Quality < 1 || params.Quality > 100 {

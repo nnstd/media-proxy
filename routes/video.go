@@ -98,11 +98,22 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 		zap.String("url", params.Url),
 		zap.String("location", params.CustomObjectKey))
 
-	cacheKey := cacheKey(params.Url, params)
+	// Ensure we have either URL or location
+	if params.Url == "" && params.CustomObjectKey == "" {
+		return c.Status(fiber.StatusBadRequest).SendString("either url or location is required")
+	}
+
+	// Use location as identifier if URL is not provided
+	identifier := params.Url
+	if identifier == "" && params.CustomObjectKey != "" {
+		identifier = params.CustomObjectKey
+	}
+
+	cacheKey := cacheKey(identifier, params)
 	cacheValue, ok := cache.Get(cacheKey)
 	if ok {
-		counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
-		counters.ServedCached.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+		counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(identifier)).Inc()
+		counters.ServedCached.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(identifier)).Inc()
 
 		c.Set("Content-Type", cacheValue.ContentType)
 		return c.Send(cacheValue.Body)
@@ -112,8 +123,8 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 	if s3cache != nil && s3cache.Enabled {
 		if params.CustomObjectKey != "" {
 			if s3val, err := s3cache.GetAtLocation(context.Background(), params.CustomObjectKey); err == nil && s3val != nil {
-				counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
-				counters.ServedCached.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+				counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(identifier)).Inc()
+				counters.ServedCached.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(identifier)).Inc()
 
 				c.Set("Content-Type", s3val.ContentType)
 				return c.Send(s3val.Body)
@@ -121,8 +132,8 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 		}
 
 		if s3val, err := s3cache.Get(context.Background(), cacheKey); err == nil && s3val != nil {
-			counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
-			counters.ServedCached.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+			counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(identifier)).Inc()
+			counters.ServedCached.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(identifier)).Inc()
 
 			cache.SetWithTTL(cacheKey, *s3val, 1000, time.Duration(config.CacheTTL)*time.Second)
 
@@ -173,7 +184,11 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 		}
 		videoURL = presignedURL.String()
 	} else {
-		// Use HTTP/HTTPS origin
+		// Use HTTP/HTTPS origin - requires URL to be provided
+		if params.Url == "" {
+			return c.Status(fiber.StatusBadRequest).SendString("url is required when location is not provided")
+		}
+
 		responseContentType, err := validation.GetContentType(params.Url)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).SendString("failed to check video")
@@ -267,9 +282,9 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 		c.Set("Content-Type", "image/webp")
 		c.Set("Cache-Control", fmt.Sprintf("public, max-age=%d", config.HTTPCacheTTL))
 
-		logger.Info("video preview served successfully", zap.String("original-content-type", parsedContentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
+		logger.Info("video preview served successfully", zap.String("original-content-type", parsedContentType), zap.String("origin", params.Hostname), zap.String("identifier", identifier))
 
-		counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+		counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(identifier)).Inc()
 
 		return c.Send(buf.Bytes())
 	}
@@ -300,9 +315,9 @@ func processVideoPreview(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cach
 	c.Set("Content-Type", "image/jpeg")
 	c.Set("Cache-Control", fmt.Sprintf("public, max-age=%d", config.HTTPCacheTTL))
 
-	logger.Info("video preview served successfully", zap.String("original-content-type", parsedContentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
+	logger.Info("video preview served successfully", zap.String("original-content-type", parsedContentType), zap.String("origin", params.Hostname), zap.String("identifier", identifier))
 
-	counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+	counters.SuccessfullyServed.WithLabelValues("video-preview", metrics.CleanHostname(params.Hostname), metrics.HashURL(identifier)).Inc()
 
 	return c.Send(buf.Bytes())
 }

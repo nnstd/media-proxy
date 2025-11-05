@@ -10,13 +10,14 @@
 
 - `processVideoPreview` relies on upstream validation (e.g. `validation.ProcessImageContextFromPath`) to ensure the incoming `params.Url` or `params.CustomObjectKey` is allowed and properly signed when necessary.
 - When `CustomObjectKey` is set, callers must ensure that the key was produced by a server-side signing/validation step; direct client-provided S3 keys are not trusted.
+- The signature validates either the location alone (when no URL is provided) or URL|location together.
 - S3 presigned URLs are generated with 1-hour expiration for ffmpeg to access the video.
 
 ## Key concepts
 
 - Frame extraction: uses ffmpeg to extract a single frame at a specified position (first frame, middle frame, or last frame).
 - Image processing: extracted frames can be resized, rescaled, and encoded to WebP or JPEG.
-- S3 explicit location: when `params.CustomObjectKey` is provided and S3 is configured, the handler reads the video directly from S3 using a presigned URL.
+- S3 explicit location: when `params.CustomObjectKey` is provided and S3 is configured, the handler reads the video directly from S3 using a presigned URL. URL parameter is optional in this case.
 - HTTP proxy: when no explicit S3 location is given, the handler validates and extracts frames from `params.Url`.
 - Caching: preview images are cached in both memory (Ristretto) and S3 (if enabled) to optimize performance.
 
@@ -28,9 +29,9 @@
 
 ## Path parameters
 
-The path after `/videos/preview/` is parsed to extract transformation parameters and video URL:
+The path after `/videos/preview/` is parsed to extract transformation parameters and optionally a video URL:
 
-Format: `/videos/preview/{params}/{base64-encoded-url-or-location}`
+Format: `/videos/preview/{params}/{base64-encoded-url}` or `/videos/preview/{params}` (when using location only)
 
 Supported parameters (can be combined):
 - `q:{quality}` - JPEG/WebP quality (1-100, default varies)
@@ -40,7 +41,10 @@ Supported parameters (can be combined):
 - `webp` - convert to WebP format (default is JPEG)
 - `f:{position}` - frame position: `first`, `middle`, or `last` (default is `first`)
 - `loc:{location}` - explicit S3 location (requires signature)
+- `sig:{signature}` - HMAC signature (required when using `loc:`)
 - `i:{interpolation}` - interpolation method for resizing (e.g., `lanczos`, `linear`, `cubic`)
+
+**Note**: Either a base64-encoded URL or `loc:{location}` parameter is required (or both). When using S3 location, the URL can be omitted.
 
 ## Request details
 
@@ -50,11 +54,14 @@ Supported parameters (can be combined):
    - The handler validates the S3 object exists and is a video
    - Generates a presigned URL (1-hour expiration) for ffmpeg to access
    - Content-Type is validated from S3 metadata
+   - URL parameter is **optional** when using S3 location
+   - Signature validates the location (or URL|location if both provided)
 
-2. **HTTP/HTTPS URL** (default):
+2. **HTTP/HTTPS URL** (when no `loc:` parameter):
    - The handler performs a HEAD request to validate content type
    - Must return a valid video MIME type
    - URL is passed directly to ffmpeg for frame extraction
+   - Requires base64-encoded URL at the end of the path
 
 ### Frame extraction
 
@@ -91,7 +98,8 @@ Applied in order:
 ## Errors and status codes
 
 - 200 OK — preview image generated and served successfully
-- 403 Forbidden — invalid content type or video MIME type not allowed
+- 400 Bad Request — missing required parameters (either URL or location required)
+- 403 Forbidden — invalid content type, video MIME type not allowed, or invalid signature
 - 404 Not Found — S3 object not found (when using S3 location)
 - 500 Internal Server Error — failures during:
   - Content type validation
@@ -121,11 +129,19 @@ curl "http://localhost:3000/videos/preview/w:500/h:300/q:80/webp/<base64-encoded
 curl "http://localhost:3000/videos/preview/f:middle/s:0.5/q:90/<base64-encoded-url>"
 ```
 
-### Preview from S3 location
+### Preview from S3 location (without URL)
 
 ```bash
 # Extract last frame from S3 object, resize to 800x600
-curl "http://localhost:3000/videos/preview/loc:<signed-location>/f:last/w:800/h:600/<base64-encoded-url>"
+# Note: No URL needed when using S3 location
+curl "http://localhost:3000/videos/preview/loc:<signed-location>/sig:<signature>/f:last/w:800/h:600"
+```
+
+### Preview from S3 location (with URL for fallback)
+
+```bash
+# Extract first frame from S3, with URL as fallback
+curl "http://localhost:3000/videos/preview/loc:<signed-location>/sig:<signature>/w:500/h:300/<base64-encoded-url>"
 ```
 
 ### High-quality WebP thumbnail
