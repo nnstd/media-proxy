@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2/middleware/cache"
@@ -134,6 +135,13 @@ func main() {
 	app.Use(etag.New())
 	app.Use(cache.New(cache.Config{
 		Expiration: time.Minute * 10,
+		KeyGenerator: func(c *fiber.Ctx) string {
+			if strings.HasPrefix(c.Path(), "/videos/") && !strings.HasPrefix(c.Path(), "/videos/preview/") {
+				return c.Path() + "?" + string(c.Request().Header.Peek("Range"))
+			}
+
+			return c.Path()
+		},
 	}))
 
 	routes.RegisterImageRoutes(logger, cacheStore, &config, app, metrics, s3cache)
