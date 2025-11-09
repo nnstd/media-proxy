@@ -19,6 +19,7 @@ import (
 	"media-proxy/metrics"
 	fiberprometheus "media-proxy/middlewares/prometheus"
 	"media-proxy/routes"
+	"media-proxy/storage"
 
 	"github.com/dgraph-io/ristretto/v2"
 )
@@ -50,6 +51,13 @@ func main() {
 		BufferItems: 64,      // number of keys per Get buffer.
 	}
 
+	// HTTP cache configuration for middleware
+	httpCacheConfig := &ristretto.Config[string, []byte]{
+		NumCounters: 1e6,     // number of keys to track frequency of (1M).
+		MaxCost:     1 << 28, // maximum cost of cache (256MB).
+		BufferItems: 64,      // number of keys per Get buffer.
+	}
+
 	if config.HTTPCacheTTL == 0 {
 		config.HTTPCacheTTL = 1800 // 30 minutes
 	}
@@ -71,6 +79,12 @@ func main() {
 	}
 
 	cacheStore, err := ristretto.NewCache(cacheConfig)
+	if err != nil {
+		logger.Fatal(err.Error())
+	}
+
+	// Create HTTP cache for middleware
+	httpCacheStore, err := ristretto.NewCache(httpCacheConfig)
 	if err != nil {
 		logger.Fatal(err.Error())
 	}
@@ -135,6 +149,14 @@ func main() {
 	app.Use(etag.New())
 	app.Use(cache.New(cache.Config{
 		Expiration: time.Minute * 10,
+		Storage:    storage.NewRistrettoStorage(httpCacheStore),
+		Next: func(c *fiber.Ctx) bool {
+			if strings.HasPrefix(c.Path(), "/videos/") && !strings.HasPrefix(c.Path(), "/videos/preview/") {
+				return true
+			}
+
+			return false
+		},
 		KeyGenerator: func(c *fiber.Ctx) string {
 			if strings.HasPrefix(c.Path(), "/videos/") && !strings.HasPrefix(c.Path(), "/videos/preview/") {
 				return c.Path() + "?" + string(c.Request().Header.Peek("Range"))
