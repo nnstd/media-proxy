@@ -38,7 +38,7 @@ func handleImageRequest(logger *zap.Logger, cache *ristretto.Cache[string, Cache
 		pathParams := c.Params("*")
 		logger.Info("image request received", zap.String("pathParams", pathParams))
 
-		ok, status, err, params := validation.ProcessImageContextFromPath(logger, pathParams, config)
+		ok, status, params, err := validation.ProcessImageContextFromPath(logger, pathParams, config)
 		if !ok {
 			return c.Status(status).SendString(err.Error())
 		}
@@ -240,6 +240,7 @@ func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[s
 //#region handleImageUpload
 
 // handleImageUpload processes image upload requests with path parameters
+// Requires: token (in path parameters), optional location and signature for S3 upload
 func handleImageUpload(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, s3cache *S3Cache) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		logger.Info("image upload request received")
@@ -256,9 +257,17 @@ func handleImageUpload(logger *zap.Logger, cache *ristretto.Cache[string, CacheV
 		}
 		defer imageFile.Close()
 
-		ok, status, err, params := validation.ProcessImageUploadFromPath(logger, pathParams, config)
+		ok, status, params, err := validation.ProcessImageUploadFromPath(logger, pathParams, config)
 		if !ok {
 			return c.Status(status).SendString(err.Error())
+		}
+
+		// Check if S3 is required and enabled (when CustomObjectKey is provided)
+		if params.CustomObjectKey != "" {
+			if s3cache == nil || !s3cache.Enabled || s3cache.Client == nil {
+				logger.Error("S3 storage is not enabled or configured")
+				return c.Status(fiber.StatusServiceUnavailable).SendString("image upload service unavailable")
+			}
 		}
 
 		contentType := body.Header.Get("Content-Type")

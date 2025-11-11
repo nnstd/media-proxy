@@ -51,7 +51,7 @@ func handleVideoPreviewRequest(logger *zap.Logger, cache *ristretto.Cache[string
 		pathParams := c.Params("*")
 		logger.Info("video preview request received", zap.String("pathParams", pathParams))
 
-		ok, status, err, params := validation.ProcessImageContextFromPath(logger, pathParams, config)
+		ok, status, params, err := validation.ProcessImageContextFromPath(logger, pathParams, config)
 		if !ok {
 			return c.Status(status).SendString(err.Error())
 		}
@@ -74,7 +74,7 @@ func handleVideoProxyRequest(logger *zap.Logger, cache *ristretto.Cache[string, 
 		pathParams := c.Params("*")
 		logger.Info("video proxy request received", zap.String("pathParams", pathParams))
 
-		ok, status, err, params := validation.ProcessImageContextFromPath(logger, pathParams, config)
+		ok, status, params, err := validation.ProcessImageContextFromPath(logger, pathParams, config)
 		if !ok {
 			return c.Status(status).SendString(err.Error())
 		}

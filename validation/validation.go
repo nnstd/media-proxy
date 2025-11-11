@@ -216,26 +216,56 @@ func sanitizeLocation(loc string) (string, error) {
 }
 
 // ProcessImageUploadFromPath processes image upload parameters from path
-func ProcessImageUploadFromPath(logger *zap.Logger, pathParams string, config *config.Config) (bool, int, error, *ImageContext) {
+// Validation: Either validate token OR if location and signature provided, validate signature
+func ProcessImageUploadFromPath(logger *zap.Logger, pathParams string, config *config.Config) (bool, int, *ImageContext, error) {
 	params, err := ParsePathParams(pathParams)
 	if err != nil {
-		return false, fiber.StatusBadRequest, fmt.Errorf("invalid path parameters: %w", err), nil
+		return false, fiber.StatusBadRequest, nil, fmt.Errorf("invalid path parameters: %w", err)
 	}
 
-	if params.Token != config.Token {
-		return false, fiber.StatusForbidden, fmt.Errorf("invalid token"), nil
+	// Handle optional S3 location with signature validation (if provided, use signature validation instead of token)
+	var customObjectKey string
+	if params.Location != "" && params.Signature != "" {
+		// Signature validation mode for S3 upload
+		if config.HmacKey == "" {
+			return false, fiber.StatusInternalServerError, nil, fmt.Errorf("hmac key not configured")
+		}
+
+		// Decode location
+		decodedLocation, err := DecodeBase64URL(params.Location)
+		if err != nil {
+			return false, fiber.StatusBadRequest, nil, fmt.Errorf("invalid location encoding: %w", err)
+		}
+
+		// Sanitize location
+		sanitized, err := sanitizeLocation(decodedLocation)
+		if err != nil {
+			return false, fiber.StatusBadRequest, nil, fmt.Errorf("invalid location: %w", err)
+		}
+
+		// Validate signature: HMAC(location)
+		if !compareHmacForMessage(sanitized, params.Signature, config.HmacKey) {
+			return false, fiber.StatusForbidden, nil, fmt.Errorf("invalid signature")
+		}
+
+		customObjectKey = sanitized
+	} else {
+		// Token validation mode (default)
+		if params.Token != config.Token {
+			return false, fiber.StatusForbidden, nil, fmt.Errorf("invalid token")
+		}
 	}
 
 	if params.Quality < 1 || params.Quality > 100 {
-		return false, fiber.StatusBadRequest, fmt.Errorf("quality must be between 1 and 100"), nil
+		return false, fiber.StatusBadRequest, nil, fmt.Errorf("quality must be between 1 and 100")
 	}
 
 	if params.Width > 0 && params.Height > 0 && (params.Width < 1 || params.Height < 1) {
-		return false, fiber.StatusBadRequest, fmt.Errorf("width and height must be greater than 0"), nil
+		return false, fiber.StatusBadRequest, nil, fmt.Errorf("width and height must be greater than 0")
 	}
 
 	if params.Scale < 0 || params.Scale > 1 {
-		return false, fiber.StatusBadRequest, fmt.Errorf("scale must be between 0 and 1"), nil
+		return false, fiber.StatusBadRequest, nil, fmt.Errorf("scale must be between 0 and 1")
 	}
 
 	// Apply default webp setting if not specified
@@ -243,15 +273,16 @@ func ProcessImageUploadFromPath(logger *zap.Logger, pathParams string, config *c
 		params.Webp = config.Webp
 	}
 
-	return true, fiber.StatusOK, nil, &ImageContext{
-		Quality:       params.Quality,
-		Width:         params.Width,
-		Height:        params.Height,
-		Scale:         params.Scale,
-		Interpolation: params.Interpolation,
-		Webp:          params.Webp,
-		FramePosition: params.FramePosition,
-	}
+	return true, fiber.StatusOK, &ImageContext{
+		Quality:         params.Quality,
+		Width:           params.Width,
+		Height:          params.Height,
+		Scale:           params.Scale,
+		Interpolation:   params.Interpolation,
+		Webp:            params.Webp,
+		FramePosition:   params.FramePosition,
+		CustomObjectKey: customObjectKey,
+	}, nil
 }
 
 func ProcessImageUpload(logger *zap.Logger, c *fiber.Ctx, config *config.Config) (ok bool, status int, err error, params *ImageContext) {
@@ -294,10 +325,10 @@ func ProcessImageUpload(logger *zap.Logger, c *fiber.Ctx, config *config.Config)
 }
 
 // ProcessImageContextFromPath processes image context from path parameters
-func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *config.Config) (bool, int, error, *ImageContext) {
+func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *config.Config) (bool, int, *ImageContext, error) {
 	params, err := ParsePathParams(pathParams)
 	if err != nil {
-		return false, fiber.StatusBadRequest, fmt.Errorf("invalid path parameters: %w", err), nil
+		return false, fiber.StatusBadRequest, nil, fmt.Errorf("invalid path parameters: %w", err)
 	}
 
 	// URL is optional if location is provided
@@ -305,7 +336,7 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 	if params.EncodedURL != "" {
 		urlParam, err = DecodeURL(params.EncodedURL)
 		if err != nil {
-			return false, fiber.StatusBadRequest, fmt.Errorf("failed to decode URL: %w", err), nil
+			return false, fiber.StatusBadRequest, nil, fmt.Errorf("failed to decode URL: %w", err)
 		}
 	}
 
@@ -313,16 +344,16 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 	customObjectKey := ""
 	if params.Location != "" {
 		if config.HmacKey == "" || params.Signature == "" {
-			return false, fiber.StatusForbidden, fmt.Errorf("signature required for custom location"), nil
+			return false, fiber.StatusForbidden, nil, fmt.Errorf("signature required for custom location")
 		}
 		// Expect location to be base64 URL-safe encoded
 		decodedLocation, derr := DecodeBase64URL(params.Location)
 		if derr != nil {
-			return false, fiber.StatusBadRequest, derr, nil
+			return false, fiber.StatusBadRequest, nil, derr
 		}
 		sanitized, serr := sanitizeLocation(decodedLocation)
 		if serr != nil {
-			return false, fiber.StatusBadRequest, serr, nil
+			return false, fiber.StatusBadRequest, nil, serr
 		}
 
 		// If URL is provided, sign URL|location, otherwise just sign location
@@ -334,23 +365,23 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 		}
 
 		if !compareHmacForMessage(signedMsg, params.Signature, config.HmacKey) {
-			return false, fiber.StatusForbidden, fmt.Errorf("invalid signature for location"), nil
+			return false, fiber.StatusForbidden, nil, fmt.Errorf("invalid signature for location")
 		}
 		customObjectKey = sanitized
 	} else if params.Signature != "" { // normal signature over URL only
 		if config.HmacKey == "" {
-			return false, fiber.StatusForbidden, fmt.Errorf("hmac key is not set"), nil
+			return false, fiber.StatusForbidden, nil, fmt.Errorf("hmac key is not set")
 		}
 		if urlParam == "" {
-			return false, fiber.StatusBadRequest, fmt.Errorf("url is required when signature is provided without location"), nil
+			return false, fiber.StatusBadRequest, nil, fmt.Errorf("url is required when signature is provided without location")
 		}
 		if !compareHmac(urlParam, params.Signature, config.HmacKey) {
-			return false, fiber.StatusForbidden, fmt.Errorf("invalid signature"), nil
+			return false, fiber.StatusForbidden, nil, fmt.Errorf("invalid signature")
 		}
 	} else {
 		// Neither location nor signature provided, URL is required
 		if urlParam == "" {
-			return false, fiber.StatusBadRequest, fmt.Errorf("url or location is required"), nil
+			return false, fiber.StatusBadRequest, nil, fmt.Errorf("url or location is required")
 		}
 	}
 
@@ -359,21 +390,21 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 	if urlParam != "" {
 		validOrigin, validHostname := pool.ValidateUrl(logger, urlParam, config.AllowedOrigins)
 		if !validOrigin {
-			return false, fiber.StatusForbidden, fmt.Errorf("url is not allowed"), nil
+			return false, fiber.StatusForbidden, nil, fmt.Errorf("url is not allowed")
 		}
 		hostname = validHostname
 	}
 
 	if params.Quality < 1 || params.Quality > 100 {
-		return false, fiber.StatusBadRequest, fmt.Errorf("quality must be between 1 and 100"), nil
+		return false, fiber.StatusBadRequest, nil, fmt.Errorf("quality must be between 1 and 100")
 	}
 
 	if params.Width > 0 && params.Height > 0 && (params.Width < 1 || params.Height < 1) {
-		return false, fiber.StatusBadRequest, fmt.Errorf("width and height must be greater than 0"), nil
+		return false, fiber.StatusBadRequest, nil, fmt.Errorf("width and height must be greater than 0")
 	}
 
 	if params.Scale < 0 || params.Scale > 1 {
-		return false, fiber.StatusBadRequest, fmt.Errorf("scale must be between 0 and 1"), nil
+		return false, fiber.StatusBadRequest, nil, fmt.Errorf("scale must be between 0 and 1")
 	}
 
 	// Apply default webp setting if not specified
@@ -381,7 +412,7 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 		params.Webp = config.Webp
 	}
 
-	return true, fiber.StatusOK, nil, &ImageContext{
+	return true, fiber.StatusOK, &ImageContext{
 		Url:             urlParam,
 		Quality:         params.Quality,
 		Width:           params.Width,
@@ -392,7 +423,7 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 		FramePosition:   params.FramePosition,
 		Hostname:        hostname,
 		CustomObjectKey: customObjectKey,
-	}
+	}, nil
 }
 
 func ProcessImageContext(logger *zap.Logger, c *fiber.Ctx, config *config.Config) (ok bool, status int, err error, params *ImageContext) {
