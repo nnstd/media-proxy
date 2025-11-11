@@ -445,8 +445,8 @@ curl "http://localhost:3000/videos/aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ=" \
 
 ### Image Upload
 ```bash
-# Path-based format (recommended)
-curl -X POST "http://localhost:3000/images/upload/q:90/webp/t:your-token/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc=" \
+# Path-based format
+curl -X POST "http://localhost:3000/images/q:90/webp/t:your-token/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbWFnZS5qcGc=" \
   --data-binary @image.jpg
 ```
 

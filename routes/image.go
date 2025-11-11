@@ -27,10 +27,7 @@ func RegisterImageRoutes(logger *zap.Logger, cache *ristretto.Cache[string, Cach
 	app.Get("/images/*", handleImageRequest(logger, cache, config, counters, s3cache))
 
 	// Image upload route with path parameters
-	app.Post("/images/upload/*", handleImageUpload(logger, cache, config, counters, s3cache))
-
-	// Legacy image upload route
-	app.Post("/images", handleImageUploadLegacy(logger, cache, config, counters, s3cache))
+	app.Post("/images/*", handleImageUpload(logger, cache, config, counters, s3cache))
 }
 
 //#region handleImageRequest
@@ -265,54 +262,6 @@ func handleImageUpload(logger *zap.Logger, cache *ristretto.Cache[string, CacheV
 		}
 
 		contentType := body.Header.Get("Content-Type")
-		if contentType == "" {
-			return c.Status(fiber.StatusForbidden).SendString("no content type received")
-		}
-
-		parsedContentType, _, err := mime.ParseMediaType(contentType)
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).SendString("failed to parse content type")
-		}
-
-		if !validation.IsImageMime(parsedContentType) {
-			return c.Status(fiber.StatusForbidden).SendString(fmt.Sprintf("content type '%s' is not allowed", parsedContentType))
-		}
-
-		requestBody, err := io.ReadAll(imageFile)
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).SendString("failed to read image file")
-		}
-
-		return processImageData(c, logger, cache, config, counters, params, requestBody, parsedContentType, s3cache)
-	}
-}
-
-//#endregion
-
-//#region handleImageUploadLegacy
-
-// handleImageUploadLegacy handles legacy query-based image upload requests
-func handleImageUploadLegacy(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, s3cache *S3Cache) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		logger.Info("image upload request received")
-
-		body, err := c.FormFile("image")
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).SendString("failed to get image file")
-		}
-
-		imageFile, err := body.Open()
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).SendString("failed to open image file")
-		}
-		defer imageFile.Close()
-
-		ok, status, err, params := validation.ProcessImageUpload(logger, c, config)
-		if !ok {
-			return c.Status(status).SendString(err.Error())
-		}
-
-		contentType := string(c.Request().Header.Peek("Content-Type"))
 		if contentType == "" {
 			return c.Status(fiber.StatusForbidden).SendString("no content type received")
 		}
