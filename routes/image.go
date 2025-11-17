@@ -62,6 +62,12 @@ func handleImageRequest(logger *zap.Logger, cache *ristretto.Cache[string, Cache
 
 // processImageResponse handles the common image processing logic
 func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, params *validation.ImageContext, s3cache *S3Cache) error {
+	// If no URL is provided but a custom location is set, this is location-based retrieval only
+	if params.Url == "" && params.CustomObjectKey == "" {
+		logger.Error("neither url nor custom location provided", zap.String("custom_object_key", params.CustomObjectKey))
+		return c.Status(fiber.StatusBadRequest).SendString("neither url nor custom location provided")
+	}
+
 	cacheKey := cacheKey(params.Url, params)
 	cacheValue, ok := cache.Get(cacheKey)
 	if ok {
@@ -86,15 +92,26 @@ func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cac
 			}
 		}
 
-		if s3val, err := s3cache.Get(context.Background(), cacheKey); err == nil && s3val != nil {
-			counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
-			counters.ServedCached.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
-			c.Set("Content-Type", s3val.ContentType)
-			c.Set("X-Cache-Place", cachePlaceS3Cache)
-			// backfill in-memory cache
-			cache.SetWithTTL(cacheKey, *s3val, 1000, time.Duration(config.CacheTTL)*time.Second)
-			return c.Send(s3val.Body)
+		if params.Url != "" {
+			if s3val, err := s3cache.Get(context.Background(), cacheKey); err == nil && s3val != nil {
+				counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+				counters.ServedCached.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
+				c.Set("Content-Type", s3val.ContentType)
+				c.Set("X-Cache-Place", cachePlaceS3Cache)
+				// backfill in-memory cache
+				cache.SetWithTTL(cacheKey, *s3val, 1000, time.Duration(config.CacheTTL)*time.Second)
+				logger.Debug("image served from S3 cache", zap.String("cache_key", cacheKey), zap.String("content_type", s3val.ContentType), zap.String("url", params.Url))
+				return c.Send(s3val.Body)
+			} else if err != nil {
+				logger.Debug("S3 cache lookup failed", zap.String("cache_key", cacheKey), zap.Error(err), zap.String("url", params.Url))
+			}
 		}
+	}
+
+	// If no URL is provided at this point, we can only serve from S3 cache
+	if params.Url == "" {
+		logger.Error("image not found in S3 cache and no URL provided to fetch from remote", zap.String("custom_object_key", params.CustomObjectKey))
+		return c.Status(fiber.StatusNotFound).SendString("image not found")
 	}
 
 	response, err := client.GetHTTPClient().Get(params.Url)
