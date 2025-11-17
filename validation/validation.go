@@ -348,6 +348,8 @@ func ProcessImageContextFromPath(logger *zap.Logger, pathParams string, config *
 			return false, fiber.StatusBadRequest, nil, derr
 		}
 		sanitized, serr := sanitizeLocation(decodedLocation)
+		logger.Debug("sanitized location", zap.String("sanitized", sanitized), zap.String("decodedLocation", decodedLocation))
+
 		if serr != nil {
 			return false, fiber.StatusBadRequest, nil, serr
 		}
