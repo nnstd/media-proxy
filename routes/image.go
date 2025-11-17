@@ -19,6 +19,7 @@ import (
 	"github.com/dgraph-io/ristretto/v2"
 	"github.com/kolesa-team/go-webp/encoder"
 	"github.com/kolesa-team/go-webp/webp"
+	"github.com/minio/minio-go/v7"
 )
 
 const (
@@ -120,47 +121,66 @@ func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cac
 		}
 	}
 
-	// If no URL is provided at this point, we can't fetch from remote
-	if params.Url == "" {
+	var processingBody []byte
+	var parsedContentType string
+
+	if params.CustomObjectKey != "" {
+		object, err := s3cache.Client.GetObject(context.Background(), s3cache.Bucket, params.CustomObjectKey, minio.GetObjectOptions{})
+		if err != nil {
+			logger.Error("failed to get object from S3", zap.String("custom_object_key", params.CustomObjectKey), zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to get object from S3")
+		}
+
+		stat, err := object.Stat()
+		if err != nil {
+			logger.Error("failed to stat object from S3", zap.String("custom_object_key", params.CustomObjectKey), zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to stat object from S3")
+		}
+
+		processingBody, err = io.ReadAll(object)
+		parsedContentType = stat.ContentType
+	} else if params.Url == "" {
+		// If no URL is provided at this point, we can't fetch from remote
+
 		logger.Error("no URL provided and no valid S3 location", zap.String("custom_object_key", params.CustomObjectKey))
 		return c.Status(fiber.StatusBadRequest).SendString("no URL or valid location provided")
-	}
-
-	response, err := client.GetHTTPClient().Get(params.Url)
-	if err != nil {
-		logger.Error("failed to fetch image", zap.Error(err), zap.String("url", params.Url), zap.String("hostname", params.Hostname))
-		return c.Status(fiber.StatusInternalServerError).SendString("failed to fetch image")
-	}
-	defer func() {
-		if closeErr := response.Body.Close(); closeErr != nil {
-			logger.Error("failed to close response body", zap.Error(closeErr), zap.String("url", params.Url))
+	} else {
+		response, err := client.GetHTTPClient().Get(params.Url)
+		if err != nil {
+			logger.Error("failed to fetch image", zap.Error(err), zap.String("url", params.Url), zap.String("hostname", params.Hostname))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to fetch image")
 		}
-	}()
+		defer func() {
+			if closeErr := response.Body.Close(); closeErr != nil {
+				logger.Error("failed to close response body", zap.Error(closeErr), zap.String("url", params.Url))
+			}
+		}()
 
-	responseContentType := response.Header.Get("Content-Type")
-	if responseContentType == "" {
-		logger.Error("no content type received from remote", zap.String("url", params.Url), zap.String("hostname", params.Hostname))
-		return c.Status(fiber.StatusForbidden).SendString("no content type received")
+		responseContentType := response.Header.Get("Content-Type")
+		if responseContentType == "" {
+			logger.Error("no content type received from remote", zap.String("url", params.Url), zap.String("hostname", params.Hostname))
+			return c.Status(fiber.StatusForbidden).SendString("no content type received")
+		}
+
+		parsedContentType, _, err := mime.ParseMediaType(responseContentType)
+		if err != nil {
+			logger.Error("failed to parse content type", zap.String("content_type", responseContentType), zap.Error(err), zap.String("url", params.Url))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to parse content type")
+		}
+
+		if !validation.IsImageMime(parsedContentType) {
+			logger.Error("invalid image mime type", zap.String("mime_type", parsedContentType), zap.String("url", params.Url), zap.String("hostname", params.Hostname))
+			return c.Status(fiber.StatusForbidden).SendString(fmt.Sprintf("content type '%s' is not allowed", parsedContentType))
+		}
+
+		processingBody, err = io.ReadAll(response.Body)
+		if err != nil {
+			logger.Error("failed to read response body", zap.Error(err), zap.String("url", params.Url), zap.String("hostname", params.Hostname))
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to read response body")
+		}
 	}
 
-	parsedContentType, _, err := mime.ParseMediaType(responseContentType)
-	if err != nil {
-		logger.Error("failed to parse content type", zap.String("content_type", responseContentType), zap.Error(err), zap.String("url", params.Url))
-		return c.Status(fiber.StatusInternalServerError).SendString("failed to parse content type")
-	}
-
-	if !validation.IsImageMime(parsedContentType) {
-		logger.Error("invalid image mime type", zap.String("mime_type", parsedContentType), zap.String("url", params.Url), zap.String("hostname", params.Hostname))
-		return c.Status(fiber.StatusForbidden).SendString(fmt.Sprintf("content type '%s' is not allowed", parsedContentType))
-	}
-
-	responseBody, err := io.ReadAll(response.Body)
-	if err != nil {
-		logger.Error("failed to read response body", zap.Error(err), zap.String("url", params.Url), zap.String("hostname", params.Hostname))
-		return c.Status(fiber.StatusInternalServerError).SendString("failed to read response body")
-	}
-
-	return processImageData(c, logger, cache, config, counters, params, responseBody, parsedContentType, s3cache)
+	return processImageData(c, logger, cache, config, counters, params, processingBody, parsedContentType, s3cache)
 }
 
 //#endregion
