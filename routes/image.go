@@ -42,14 +42,15 @@ func RegisterImageRoutes(logger *zap.Logger, cache *ristretto.Cache[string, Cach
 func handleImageRequest(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, s3cache *S3Cache) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		pathParams := c.Params("*")
-		logger.Info("image request received", zap.String("pathParams", pathParams))
+		logger.Info("image request received", zap.String("pathParams", pathParams), zap.String("method", c.Method()), zap.String("remote_ip", c.IP()))
 
 		ok, status, params, err := validation.ProcessImageContextFromPath(logger, pathParams, config)
 		if !ok {
+			logger.Error("failed to process image context from path", zap.String("pathParams", pathParams), zap.Int("status", status), zap.Error(err))
 			return c.Status(status).SendString(err.Error())
 		}
 
-		logger.Debug("processed image parameters", zap.Any("params", params))
+		logger.Debug("processed image parameters", zap.Any("params", params), zap.String("url", params.Url), zap.String("hostname", params.Hostname))
 
 		return processImageResponse(c, logger, cache, config, counters, params, s3cache)
 	}
@@ -80,6 +81,7 @@ func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cac
 				counters.ServedCached.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 				c.Set("Content-Type", s3val.ContentType)
 				c.Set("X-Cache-Place", cachePlaceS3CacheLocation)
+				logger.Debug("image served from S3 cache location", zap.String("s3_location", params.CustomObjectKey), zap.String("content_type", s3val.ContentType), zap.String("url", params.Url))
 				return c.Send(s3val.Body)
 			}
 		}
@@ -97,30 +99,35 @@ func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cac
 
 	response, err := client.GetHTTPClient().Get(params.Url)
 	if err != nil {
+		logger.Error("failed to fetch image", zap.Error(err), zap.String("url", params.Url), zap.String("hostname", params.Hostname))
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to fetch image")
 	}
 	defer func() {
 		if closeErr := response.Body.Close(); closeErr != nil {
-			logger.Error("failed to close response body", zap.Error(closeErr))
+			logger.Error("failed to close response body", zap.Error(closeErr), zap.String("url", params.Url))
 		}
 	}()
 
 	responseContentType := response.Header.Get("Content-Type")
 	if responseContentType == "" {
+		logger.Error("no content type received from remote", zap.String("url", params.Url), zap.String("hostname", params.Hostname))
 		return c.Status(fiber.StatusForbidden).SendString("no content type received")
 	}
 
 	parsedContentType, _, err := mime.ParseMediaType(responseContentType)
 	if err != nil {
+		logger.Error("failed to parse content type", zap.String("content_type", responseContentType), zap.Error(err), zap.String("url", params.Url))
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to parse content type")
 	}
 
 	if !validation.IsImageMime(parsedContentType) {
+		logger.Error("invalid image mime type", zap.String("mime_type", parsedContentType), zap.String("url", params.Url), zap.String("hostname", params.Hostname))
 		return c.Status(fiber.StatusForbidden).SendString(fmt.Sprintf("content type '%s' is not allowed", parsedContentType))
 	}
 
 	responseBody, err := io.ReadAll(response.Body)
 	if err != nil {
+		logger.Error("failed to read response body", zap.Error(err), zap.String("url", params.Url), zap.String("hostname", params.Hostname))
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to read response body")
 	}
 
@@ -150,14 +157,20 @@ func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[s
 			if params.CustomObjectKey != "" {
 				// store at explicit location
 				go func() {
-					_ = s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, value.Body, value.ContentType)
+					if err := s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, value.Body, value.ContentType); err != nil {
+						logger.Error("failed to store unmodified image in S3 cache at location", zap.Error(err), zap.String("s3_location", params.CustomObjectKey), zap.String("content_type", contentType), zap.String("url", params.Url))
+					}
 				}()
 			} else {
-				go func() { _ = s3cache.Put(context.Background(), cacheKey, value.Body, value.ContentType) }()
+				go func() {
+					if err := s3cache.Put(context.Background(), cacheKey, value.Body, value.ContentType); err != nil {
+						logger.Error("failed to store unmodified image in S3 cache", zap.Error(err), zap.String("cache_key", cacheKey), zap.String("content_type", contentType), zap.String("url", params.Url))
+					}
+				}()
 			}
 		}
 
-		logger.Debug("unmodified image served successfully", zap.String("content-type", contentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
+		logger.Debug("unmodified image served successfully", zap.String("content_type", contentType), zap.String("origin", params.Hostname), zap.String("url", params.Url), zap.String("cache_key", cacheKey))
 		counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 		return c.Send(imageData)
 	}
@@ -165,20 +178,21 @@ func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[s
 	// Process image only when modifications are needed
 	img, err := readImageSlice(imageData, contentType)
 	if err != nil {
+		logger.Error("failed to read image", zap.Error(err), zap.String("content_type", contentType), zap.String("url", params.Url), zap.Int("image_size", len(imageData)))
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to read image")
 	}
 
 	if params.Width > 0 || params.Height > 0 {
 		img, err = resizeImage(img, params.Width, params.Height, params.Interpolation)
 		if err != nil {
-			logger.Error("failed to resize image", zap.Error(err))
+			logger.Error("failed to resize image", zap.Error(err), zap.Int("width", params.Width), zap.Int("height", params.Height), zap.Int("interpolation", int(params.Interpolation)), zap.String("url", params.Url))
 		}
 	}
 
 	if params.Scale > 0 {
 		img, err = rescaleImage(img, params.Scale)
 		if err != nil {
-			logger.Error("failed to rescale image", zap.Error(err))
+			logger.Error("failed to rescale image", zap.Error(err), zap.Float64("scale", params.Scale), zap.String("url", params.Url))
 		}
 	}
 
@@ -192,10 +206,12 @@ func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[s
 
 		options, err := encoder.NewLossyEncoderOptions(encoder.PresetDefault, float32(params.Quality))
 		if err != nil {
+			logger.Error("failed to create webp encoder options", zap.Error(err), zap.Int("quality", params.Quality), zap.String("url", params.Url))
 			return c.Status(fiber.StatusInternalServerError).SendString("failed to create webp encoder options")
 		}
 		err = webp.Encode(buf, img, options)
 		if err != nil {
+			logger.Error("failed to encode image to webp", zap.Error(err), zap.Int("quality", params.Quality), zap.String("url", params.Url))
 			return c.Status(fiber.StatusInternalServerError).SendString("failed to encode image")
 		}
 
@@ -206,14 +222,20 @@ func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[s
 			copy(data, value.Body)
 			if params.CustomObjectKey != "" {
 				go func() {
-					_ = s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, data, value.ContentType)
+					if err := s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, data, value.ContentType); err != nil {
+						logger.Error("failed to store webp image in S3 cache at location", zap.Error(err), zap.String("s3_location", params.CustomObjectKey), zap.String("url", params.Url))
+					}
 				}()
 			} else {
-				go func() { _ = s3cache.Put(context.Background(), cacheKey, data, value.ContentType) }()
+				go func() {
+					if err := s3cache.Put(context.Background(), cacheKey, data, value.ContentType); err != nil {
+						logger.Error("failed to store webp image in S3 cache", zap.Error(err), zap.String("cache_key", cacheKey), zap.String("url", params.Url))
+					}
+				}()
 			}
 		}
 
-		logger.Info("image served successfully", zap.String("content-type", "image/webp"), zap.String("origin", params.Hostname), zap.String("url", params.Url))
+		logger.Info("image served successfully", zap.String("content_type", "image/webp"), zap.String("origin", params.Hostname), zap.String("url", params.Url), zap.String("cache_key", cacheKey))
 
 		counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 
@@ -232,14 +254,20 @@ func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[s
 			copy(data, value.Body)
 			if params.CustomObjectKey != "" {
 				go func() {
-					_ = s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, data, value.ContentType)
+					if err := s3cache.PutAtLocation(context.Background(), params.CustomObjectKey, data, value.ContentType); err != nil {
+						logger.Error("failed to store image in S3 cache at location", zap.Error(err), zap.String("s3_location", params.CustomObjectKey), zap.String("content_type", contentType), zap.String("url", params.Url))
+					}
 				}()
 			} else {
-				go func() { _ = s3cache.Put(context.Background(), cacheKey, data, value.ContentType) }()
+				go func() {
+					if err := s3cache.Put(context.Background(), cacheKey, data, value.ContentType); err != nil {
+						logger.Error("failed to store image in S3 cache", zap.Error(err), zap.String("cache_key", cacheKey), zap.String("content_type", contentType), zap.String("url", params.Url))
+					}
+				}()
 			}
 		}
 
-		logger.Info("image served successfully", zap.String("content-type", contentType), zap.String("origin", params.Hostname), zap.String("url", params.Url))
+		logger.Info("image served successfully", zap.String("content_type", contentType), zap.String("origin", params.Hostname), zap.String("url", params.Url), zap.String("cache_key", cacheKey))
 
 		counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 
