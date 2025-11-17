@@ -21,6 +21,12 @@ import (
 	"github.com/kolesa-team/go-webp/webp"
 )
 
+const (
+	cachePlaceResponseHandler = "response-handler"
+	cachePlaceS3CacheLocation = "s3cache-location"
+	cachePlaceS3Cache         = "s3cache"
+)
+
 // RegisterImageRoutes sets up image processing routes
 func RegisterImageRoutes(logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, app *fiber.App, counters *metrics.Metrics, s3cache *S3Cache) {
 	// New path-based route: /images/q:50/w:500/h:300/webp/{base64-encoded-url}
@@ -43,6 +49,8 @@ func handleImageRequest(logger *zap.Logger, cache *ristretto.Cache[string, Cache
 			return c.Status(status).SendString(err.Error())
 		}
 
+		logger.Debug("processed image parameters", zap.Any("params", params))
+
 		return processImageResponse(c, logger, cache, config, counters, params, s3cache)
 	}
 }
@@ -60,6 +68,7 @@ func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cac
 		counters.ServedCached.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 
 		c.Set("Content-Type", cacheValue.ContentType)
+		c.Set("X-Cache-Place", cachePlaceResponseHandler)
 		return c.Send(cacheValue.Body)
 	}
 
@@ -70,13 +79,16 @@ func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cac
 				counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 				counters.ServedCached.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 				c.Set("Content-Type", s3val.ContentType)
+				c.Set("X-Cache-Place", cachePlaceS3CacheLocation)
 				return c.Send(s3val.Body)
 			}
 		}
+
 		if s3val, err := s3cache.Get(context.Background(), cacheKey); err == nil && s3val != nil {
 			counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 			counters.ServedCached.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
 			c.Set("Content-Type", s3val.ContentType)
+			c.Set("X-Cache-Place", cachePlaceS3Cache)
 			// backfill in-memory cache
 			cache.SetWithTTL(cacheKey, *s3val, 1000, time.Duration(config.CacheTTL)*time.Second)
 			return c.Send(s3val.Body)
