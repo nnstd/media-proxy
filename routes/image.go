@@ -68,7 +68,8 @@ func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cac
 		return c.Status(fiber.StatusBadRequest).SendString("neither url nor custom location provided")
 	}
 
-	cacheKey := cacheKey(params.Url, params)
+	cacheKey := cacheKey(params)
+
 	cacheValue, ok := cache.Get(cacheKey)
 	if ok {
 		counters.SuccessfullyServed.WithLabelValues("image", metrics.CleanHostname(params.Hostname), metrics.HashURL(params.Url)).Inc()
@@ -108,10 +109,21 @@ func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cac
 		}
 	}
 
-	// If no URL is provided at this point, we can only serve from S3 cache
+	// Handle case where we have a CustomObjectKey but no S3 cache or S3 lookup failed
+	if params.CustomObjectKey != "" && params.Url == "" {
+		if s3cache == nil || !s3cache.Enabled {
+			logger.Error("S3 cache not available for custom location request", zap.String("custom_object_key", params.CustomObjectKey))
+			return c.Status(fiber.StatusServiceUnavailable).SendString("S3 storage not available")
+		} else {
+			logger.Error("image not found at S3 location", zap.String("custom_object_key", params.CustomObjectKey))
+			return c.Status(fiber.StatusNotFound).SendString("image not found")
+		}
+	}
+
+	// If no URL is provided at this point, we can't fetch from remote
 	if params.Url == "" {
-		logger.Error("image not found in S3 cache and no URL provided to fetch from remote", zap.String("custom_object_key", params.CustomObjectKey))
-		return c.Status(fiber.StatusNotFound).SendString("image not found")
+		logger.Error("no URL provided and no valid S3 location", zap.String("custom_object_key", params.CustomObjectKey))
+		return c.Status(fiber.StatusBadRequest).SendString("no URL or valid location provided")
 	}
 
 	response, err := client.GetHTTPClient().Get(params.Url)
@@ -157,7 +169,7 @@ func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cac
 
 // processImageData handles the actual image processing and encoding
 func processImageData(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cache[string, CacheValue], config *config.Config, counters *metrics.Metrics, params *validation.ImageContext, imageData []byte, contentType string, s3cache *S3Cache) error {
-	cacheKey := cacheKey(params.Url, params)
+	cacheKey := cacheKey(params)
 
 	// Early return for unmodified images (no quality change, no webp, no resize, no scale)
 	if params.Quality == 100 && !params.Webp && params.Width == 0 && params.Height == 0 && params.Scale == 0 {

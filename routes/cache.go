@@ -20,10 +20,18 @@ type CacheValue struct {
 	ContentType string
 }
 
-func cacheKey(url string, params *validation.ImageContext) string {
+func cacheKey(params *validation.ImageContext) string {
 	// Use string builder for more efficient cache key generation
 	var builder strings.Builder
-	builder.WriteString(url)
+
+	if params.CustomObjectKey != "" {
+		builder.WriteString("location=")
+		builder.WriteString(params.CustomObjectKey)
+	} else {
+		builder.WriteString("url=")
+		builder.WriteString(params.Url)
+	}
+
 	builder.WriteString(";quality=")
 	builder.WriteString(strconv.Itoa(params.Quality))
 	builder.WriteString(";width=")
