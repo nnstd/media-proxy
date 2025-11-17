@@ -442,10 +442,14 @@ func ProcessImageContext(logger *zap.Logger, c *fiber.Ctx, config *config.Config
 		if derr != nil {
 			return false, fiber.StatusBadRequest, derr, nil
 		}
+
 		sanitized, serr := sanitizeLocation(decodedLocation)
+		logger.Debug("sanitized location", zap.String("sanitized", sanitized), zap.String("decodedLocation", decodedLocation))
+
 		if serr != nil {
 			return false, fiber.StatusBadRequest, serr, nil
 		}
+
 		signedMsg := urlParam + "|" + sanitized
 		if !compareHmacForMessage(signedMsg, signature, config.HmacKey) {
 			return false, fiber.StatusForbidden, fmt.Errorf("invalid signature for location"), nil
