@@ -110,17 +110,6 @@ func processImageResponse(c *fiber.Ctx, logger *zap.Logger, cache *ristretto.Cac
 		}
 	}
 
-	// Handle case where we have a CustomObjectKey but no S3 cache or S3 lookup failed
-	if params.CustomObjectKey != "" && params.Url == "" {
-		if s3cache == nil || !s3cache.Enabled {
-			logger.Error("S3 cache not available for custom location request", zap.String("custom_object_key", params.CustomObjectKey))
-			return c.Status(fiber.StatusServiceUnavailable).SendString("S3 storage not available")
-		} else {
-			logger.Error("image not found at S3 location", zap.String("custom_object_key", params.CustomObjectKey))
-			return c.Status(fiber.StatusNotFound).SendString("image not found")
-		}
-	}
-
 	var processingBody []byte
 	var parsedContentType string
 
